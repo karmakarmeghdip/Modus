@@ -1,0 +1,7 @@
+// Invalid: Modus strictly requires parentheses around if/else-if conditions
+function test_if(x: i32): i32 {
+    if x > 0 {
+        return 1;
+    }
+    return 0;
+}

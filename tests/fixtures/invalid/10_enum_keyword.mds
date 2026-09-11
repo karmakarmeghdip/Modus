@@ -1,0 +1,5 @@
+// Invalid: Modus uses 'type' for discriminated unions (type Option(T) = Some(T) | None;), never 'enum'
+enum Option(T) {
+    Some(T),
+    None,
+}

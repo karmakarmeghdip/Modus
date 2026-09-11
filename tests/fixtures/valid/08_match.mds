@@ -1,0 +1,37 @@
+// Modus Pattern Matching: wildcard, identifier, union variant, record, tuple, and literals
+
+type Shape = CircleShape(f64) | RectShape(f64, f64) | PointShape;
+
+
+function describe_shape(s: Shape): String {
+    return match s {
+        Shape.CircleShape(r) => "Circle",
+        Shape.RectShape(w, h) => "Rectangle",
+        Shape.PointShape => "Point",
+        _ => "Unknown",
+    };
+}
+
+function match_record(pt: { x: i32, y: i32 }): i32 {
+    return match pt {
+        { x: 0, y: 0 } => 0,
+        { x: 0, y: y_val } => y_val,
+        { x: x_val, y: 0 } => x_val,
+        { x: x_val, y: y_val } => x_val + y_val,
+    };
+}
+
+function match_tuple(pair: (i32, String)): String {
+    return match pair {
+        (0, msg) => msg,
+        (code, _) => "non-zero code",
+    };
+}
+
+function match_literals(val: i32): String {
+    return match val {
+        1 => "one",
+        2 => "two",
+        _ => "other",
+    };
+}

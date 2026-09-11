@@ -1,0 +1,6 @@
+// Invalid: Modus has no imperative loops; 'for' loops are forbidden (use tail recursion or closures)
+function loop_fn(): void {
+    for (item in list) {
+        // illegal loop
+    }
+}

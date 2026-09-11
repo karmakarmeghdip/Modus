@@ -1,0 +1,31 @@
+// Modus Primitive Types and Literals
+
+function test_primitives(): bool {
+    // Unsigned integers
+    let a: u8 = 255;
+    let b: u16 = 65535;
+    let c: u32 = 4294967295;
+    let d: u64 = 1000000;
+
+    // Signed integers
+    let e: i8 = -128;
+    let f: i16 = -32768;
+    let g: i32 = -2147483648;
+    let h: i64 = -9223372036854775807;
+
+    // Floating-point numbers
+    let pi: f32 = 3.14159;
+    let euler: f64 = 2.718281828459045;
+
+    // Booleans
+    let is_active: bool = true;
+    let is_closed: bool = false;
+
+    // Strings
+    let message: String = "Hello, Modus!";
+
+    // Void unit
+    let unit: void = ();
+
+    return is_active;
+}

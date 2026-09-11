@@ -1,0 +1,9 @@
+// Invalid: Modus uses structural record literals ({ x: 1, y: 2 }), never Rust-style named instantiations (Point { ... })
+type Point = {
+    x: i32,
+    y: i32,
+};
+
+function test_named_init(): Point {
+    return Point { x: 1, y: 2 };
+}

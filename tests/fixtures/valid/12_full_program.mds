@@ -1,0 +1,85 @@
+// Comprehensive Modus Program demonstrating all core language features
+
+type Option(T) = Some(T) | None;
+
+type Result(T, E) = Ok(T) | Err(E);
+
+type Point = {
+    x: f64,
+    y: f64,
+};
+
+type Circle = {
+    center: Point,
+    radius: f64,
+};
+
+type Rect = {
+    origin: Point,
+    width: f64,
+    height: f64,
+};
+
+trait Drawable(Self) {
+    function draw(self: Self): IO(void);
+}
+
+impl Drawable for Circle {
+    function draw(self: Circle): IO(void) {
+        // Render circle effect
+        return IO.pure(());
+    }
+}
+
+impl Drawable for Rect {
+    function draw(self: Rect): IO(void) {
+        // Render rectangle effect
+        return IO.pure(());
+    }
+}
+
+function render_all_at(items: [Drawable], index: i32, count: i32): IO(void) {
+    if (index < count) {
+        perform items[index].draw();
+        perform render_all_at(items, index + 1, count);
+        return IO.pure(());
+    } else {
+        return IO.pure(());
+    }
+}
+
+function render_all(items: [Drawable]): IO(void) {
+    perform render_all_at(items, 0, 2);
+    return IO.pure(());
+}
+
+function load_radius_from_config(path: String): IO(Result(f64, String)) {
+    return IO.pure(Result.Ok(5.0));
+}
+
+function initialize_scene(): IO(Result(Circle, String)) {
+    let r: f64 = check perform load_radius_from_config("config.json");
+    let c: Circle = {
+        center: { x: 0.0, y: 0.0 },
+        radius: r,
+    };
+    return Result.Ok(c);
+}
+
+function main(): IO(void) {
+    let c: Circle = {
+        center: { x: 10.0, y: 20.0 },
+        radius: 3.5,
+    };
+
+    let r: Rect = {
+        origin: { x: 0.0, y: 0.0 },
+        width: 100.0,
+        height: 50.0,
+    };
+
+    let shapes: [Drawable] = [c, r];
+    perform render_all(shapes);
+
+    return IO.pure(());
+}

@@ -1,0 +1,23 @@
+// Modus Closures: arrow expressions, block closures, and closure types
+
+function apply(x: i32, f: (i32) => i32): i32 {
+    return f(x);
+}
+
+function closure_examples(): i32 {
+    // Single argument closure
+    let increment: (i32) => i32 = (x: i32) => x + 1;
+
+    // Multiple arguments
+    let add: (i32, i32) => i32 = (a: i32, b: i32) => a + b;
+
+    // Closure with block body
+    let compute: (i32) => i32 = (val: i32) => {
+        let doubled = val * 2;
+        return doubled + 10;
+    };
+
+    // Passing closure to higher order function
+    let res = apply(5, (n: i32) => n * 3);
+    return res;
+}

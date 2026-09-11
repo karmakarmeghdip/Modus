@@ -1,0 +1,25 @@
+// Modus Operators and Precedence Climbing
+
+function arithmetic(): i32 {
+    let a = 10 + 20 * 30 - 40 / 2;
+    let b = (10 + 20) * (30 - 40) % 5;
+    let c = -a + -b;
+    return c;
+}
+
+function logic_and_comparison(x: i32, y: i32): bool {
+    let cond1 = x > 0 && y <= 100;
+    let cond2 = x == 0 || y != 0;
+    let cond3 = !cond1 && cond2;
+    return cond3;
+}
+
+function prefix_chains(): IO(Result(i32, String)) {
+    // Unary chain: check perform
+    let res = check perform fetch_data();
+    return Result.Ok(-res);
+}
+
+function fetch_data(): IO(Result(i32, String)) {
+    return IO.pure(Result.Ok(42));
+}

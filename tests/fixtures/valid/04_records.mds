@@ -1,0 +1,35 @@
+// Modus Records: type declarations, literals, field access, and functional updates
+
+type Point = {
+    x: i32,
+    y: i32,
+};
+
+type ServerConfig = {
+    host: String,
+    port: u16,
+    tls: bool,
+};
+
+function update_port(cfg: ServerConfig, new_port: u16): ServerConfig {
+    // Record functional update syntax: { ...cfg, port: new_port }
+    return { ...cfg, port: new_port };
+}
+
+function record_operations(): u16 {
+    // Direct structural record literal typed via let binding
+    let p: Point = { x: 1, y: 2 };
+    let px = p.x;
+    let py = p.y;
+
+    // Structural record literal typed via let binding
+    let config: ServerConfig = {
+        host: "127.0.0.1",
+        port: 3000,
+        tls: false,
+    };
+
+    let updated = { ...config, tls: true, port: 8080 };
+    let port = updated.port;
+    return port;
+}

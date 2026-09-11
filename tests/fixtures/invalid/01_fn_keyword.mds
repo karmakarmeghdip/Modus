@@ -1,0 +1,4 @@
+// Invalid: Modus uses 'function', never 'fn'
+fn invalid_syntax(): void {
+    let x = 1;
+}

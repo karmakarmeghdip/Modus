@@ -1,0 +1,4 @@
+// Invalid: Modus is purely functional with immutable variables only; 'mut' is forbidden
+function test_mut(): void {
+    let mut x: i32 = 10;
+}

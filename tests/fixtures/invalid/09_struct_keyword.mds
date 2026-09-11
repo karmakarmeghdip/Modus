@@ -1,0 +1,5 @@
+// Invalid: Modus uses 'type' for records (type Point = { x: i32, y: i32 };), never 'struct'
+struct Point {
+    x: i32,
+    y: i32,
+}

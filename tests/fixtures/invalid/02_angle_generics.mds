@@ -1,0 +1,4 @@
+// Invalid: Modus uses parenthesized generics Result(T, E), never angle brackets <T, E>
+function identity<T>(item: T): T {
+    return item;
+}

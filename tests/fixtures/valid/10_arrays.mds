@@ -1,0 +1,39 @@
+// Modus Arrays: literals, array types, trait object arrays, and indexing
+
+type Circle = {
+    radius: f64,
+};
+
+type Rect = {
+    w: f64,
+    h: f64,
+};
+
+trait Drawable(Self) {
+    function draw(self: Self): IO(void);
+}
+
+impl Drawable for Circle {
+    function draw(self: Circle): IO(void) {
+        return IO.pure(());
+    }
+}
+
+impl Drawable for Rect {
+    function draw(self: Rect): IO(void) {
+        return IO.pure(());
+    }
+}
+
+function array_operations(): Drawable {
+    // Array of primitives
+    let numbers: [i32] = [1, 2, 3, 4, 5];
+    let first = numbers[0];
+
+    // Heterogeneous array of trait objects with fat-pointers (no dyn)
+    let c: Circle = { radius: 2.0 };
+    let r: Rect = { w: 4.0, h: 1.0 };
+    let list: [Drawable] = [c, r];
+    let item = list[1];
+    return item;
+}

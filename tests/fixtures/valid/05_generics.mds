@@ -1,0 +1,29 @@
+// Modus Generics: parenthesized type arguments, generic types, and discriminated unions
+
+type Option(T) = Some(T) | None;
+
+type Result(T, E) = Ok(T) | Err(E);
+
+type Box(T) = {
+    value: T,
+};
+
+type Pair(A, B) = {
+    first: A,
+    second: B,
+};
+
+function unwrap_or(T)(opt: Option(T), default_val: T): T {
+    match opt {
+        Option.Some(val) => val,
+        Option.None => default_val,
+    }
+}
+
+function create_nested_result(): Result(Option(i32), String) {
+    return Result.Ok(Option.Some(42));
+}
+
+function box_value(T)(val: T): Box(T) {
+    return { value: val };
+}

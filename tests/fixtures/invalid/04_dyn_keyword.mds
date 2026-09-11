@@ -1,0 +1,4 @@
+// Invalid: Modus has no 'dyn' keyword; trait names are directly usable as dynamic trait objects
+function render(item: dyn Drawable): void {
+    item.draw();
+}

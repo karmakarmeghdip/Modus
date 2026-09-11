@@ -1,0 +1,6 @@
+// Invalid: Modus has no imperative loops; 'while' is forbidden (use tail recursion)
+function loop_fn(): void {
+    while (true) {
+        // illegal loop
+    }
+}

@@ -1,0 +1,48 @@
+// Modus Traits and Implementations: static bounds and dynamic fat-pointer dispatch
+
+type Circle = {
+    radius: f64,
+};
+
+type Rect = {
+    w: f64,
+    h: f64,
+};
+
+trait Drawable(Self) {
+    function draw(self: Self): IO(void);
+}
+
+impl Drawable for Circle {
+    function draw(self: Circle): IO(void) {
+        // Draw circle effect
+        return IO.pure(());
+    }
+}
+
+impl Drawable for Rect {
+    function draw(self: Rect): IO(void) {
+        // Draw rectangle effect
+        return IO.pure(());
+    }
+}
+
+// Static monomorphized dispatch using trait bound
+function renderStatic(T: Drawable)(item: T): IO(void) {
+    perform item.draw();
+    return IO.pure(());
+}
+
+// Dynamic fat-pointer dispatch (no dyn keyword)
+function renderDynamic(item: Drawable): IO(void) {
+    perform item.draw();
+    return IO.pure(());
+}
+
+trait Try(Self) {
+    function branch(self: Self): ControlFlow(Self.Residual, Self.Output);
+}
+
+trait FromResidual(Self, Residual) {
+    function fromResidual(res: Residual): Self;
+}

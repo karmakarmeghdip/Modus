@@ -1,0 +1,30 @@
+// Modus Functions: standard blocks, expression bodies, generics, and trait bounds
+
+function add(a: i32, b: i32): i32 {
+    return a + b;
+}
+
+// Expression body syntax with =>
+function square(x: i32): i32 => x * x;
+
+// Effectful function returning IO(void)
+function log_message(msg: String): IO(void) {
+    return IO.pure(());
+}
+
+// Generic function with parenthesized type parameter
+function identity(T)(value: T): T => value;
+
+// Multiple generic type parameters
+function make_tuple(A, B)(first: A, second: B): { first: A, second: B } {
+    return { first: first, second: second };
+}
+
+// Trait bound on generic type parameter with effectful execution
+function renderStatic(T: Drawable)(item: T): IO(void) {
+    perform item.draw();
+    return IO.pure(());
+}
+
+// Nullary function
+function default_port(): u16 => 8080;
