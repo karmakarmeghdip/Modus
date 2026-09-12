@@ -310,7 +310,7 @@ fn test_function_syntax_variants() {
             Declaration::Function(f) => {
                 assert_eq!(f.name, "add");
                 assert_eq!(f.params.len(), 2);
-                assert!(matches!(f.body, FunctionBody::Block(_)));
+                assert!(matches!(f.body, Some(FunctionBody::Block(_))));
             }
             _ => panic!("Expected Function declaration"),
         }
@@ -328,7 +328,7 @@ fn test_function_syntax_variants() {
         match spanned.node {
             Declaration::Function(f) => {
                 assert_eq!(f.name, "double");
-                assert!(matches!(f.body, FunctionBody::Expr(_)));
+                assert!(matches!(f.body, Some(FunctionBody::Expr(_))));
             }
             _ => panic!("Expected Function declaration"),
         }

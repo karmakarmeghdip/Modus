@@ -1,0 +1,19 @@
+export function square(n: i32): i32 {
+    return n * n;
+}
+
+export function sum_range(n: i32, acc: i32): i32 {
+    if (n <= 0) {
+        return acc;
+    } else {
+        return sum_range(n - 1, acc + n);
+    }
+}
+
+export function factorial(n: i32, acc: i32): i32 {
+    if (n <= 1) {
+        return acc;
+    } else {
+        return factorial(n - 1, n * acc);
+    }
+}

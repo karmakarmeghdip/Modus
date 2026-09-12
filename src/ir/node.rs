@@ -462,10 +462,21 @@ pub struct AnfImpl {
     pub span: Span,
 }
 
+/// An external function imported from another module or dynamic library.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnfExternFunction {
+    pub name: String,
+    pub symbol_name: String,
+    pub param_types: Vec<Type>,
+    pub return_type: Type,
+    pub is_effectful: bool,
+}
+
 /// A complete Modus program in ANF IR.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnfProgram {
     pub functions: Vec<AnfFunction>,
+    pub extern_functions: Vec<AnfExternFunction>,
     pub types: Vec<TypeDecl>,
     pub traits: Vec<TraitDecl>,
     pub impls: Vec<AnfImpl>,

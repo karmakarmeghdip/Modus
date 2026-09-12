@@ -38,11 +38,14 @@ impl<'a> TypeInferrer<'a> {
             }
 
             Expr::FieldAccess { receiver, field } => {
-                // Check if receiver is a type or namespace name (e.g. IO.pure, Result.Ok, Option.None)
+                // Check if receiver is a type or namespace name (e.g. IO.pure, Result.Ok, Option.None, Math.add)
                 if let Expr::Ident(type_or_mod) = &receiver.node {
                     let qualified = format!("{type_or_mod}.{field}");
                     if let Some(ctor) = self.env.constructors.get(&qualified).cloned() {
                         return Ok(self.instantiate_constructor(&ctor));
+                    }
+                    if let Some(sig) = self.env.lookup_function(&qualified).cloned() {
+                        return Ok(self.instantiate_function(&sig));
                     }
                 }
 
@@ -123,7 +126,7 @@ impl<'a> TypeInferrer<'a> {
                 method,
                 args,
             } => {
-                // Check if receiver is a type or namespace name (e.g. IO.pure, Result.Ok, Option.Some)
+                // Check if receiver is a type or namespace name (e.g. IO.pure, Result.Ok, Option.Some, Math.add)
                 if let Expr::Ident(type_name) = &receiver.node {
                     let qualified = format!("{type_name}.{method}");
                     if let Some(ctor) = self.env.constructors.get(&qualified).cloned() {
@@ -137,6 +140,31 @@ impl<'a> TypeInferrer<'a> {
                                     },
                                     Some(expr.span),
                                 ));
+                            }
+                            for (arg, param_ty) in args.iter().zip(params.iter()) {
+                                self.check_expr(arg, param_ty)?;
+                            }
+                            return Ok(self.subst.apply(&ret));
+                        }
+                    }
+
+                    if let Some(sig) = self.env.lookup_function(&qualified).cloned() {
+                        let fn_ty = self.instantiate_function(&sig);
+                        if let Type::Function { params, ret } = fn_ty {
+                            if params.len() != args.len() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: params.len(),
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            if let Some(ctx) = &self.effect_ctx
+                                && ret.is_io()
+                                && !ctx.is_io
+                            {
+                                ctx.verify_call_allowed(&qualified, &ret, Some(expr.span))?;
                             }
                             for (arg, param_ty) in args.iter().zip(params.iter()) {
                                 self.check_expr(arg, param_ty)?;

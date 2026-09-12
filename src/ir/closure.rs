@@ -38,6 +38,10 @@ impl ClosureConvertCtx {
         for tr in &prog.traits {
             global_names.insert(tr.name.clone());
         }
+        for ext in &prog.extern_functions {
+            global_names.insert(ext.name.clone());
+            global_names.insert(ext.symbol_name.clone());
+        }
         // Builtins
         global_names.insert("IO".to_string());
         global_names.insert("Result".to_string());
@@ -279,6 +283,7 @@ impl ClosureConvertCtx {
                             TypeDef::Alias(sem_type_to_ast_type(&env_record_type)),
                             span,
                         ),
+                        is_exported: false,
                     };
                     self.new_types.push(env_type_decl);
                     self.global_names.insert(env_type_name.clone());

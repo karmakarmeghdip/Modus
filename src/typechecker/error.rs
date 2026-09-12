@@ -62,6 +62,10 @@ pub enum TypeErrorKind {
     CannotInfer(String),
     /// Invalid pattern match
     InvalidPattern(String),
+    /// Function declared without a body in a non-library file
+    MissingFunctionBody { function_name: String },
+    /// Function declared with a body in a library export map file
+    UnexpectedFunctionBodyInHeader { function_name: String },
     /// General semantic error
     General(String),
 }
@@ -163,6 +167,18 @@ impl fmt::Display for TypeErrorKind {
             }
             Self::InvalidPattern(msg) => {
                 write!(f, "Invalid pattern: {msg}")
+            }
+            Self::MissingFunctionBody { function_name } => {
+                write!(
+                    f,
+                    "Function '{function_name}' must have an implementation body. Empty function prototypes are only permitted in export map files containing a 'library' directive."
+                )
+            }
+            Self::UnexpectedFunctionBodyInHeader { function_name } => {
+                write!(
+                    f,
+                    "Function '{function_name}' cannot define a body in a library export map. Remove the body and terminate the signature with ';' to declare the exported symbol."
+                )
             }
             Self::General(msg) => {
                 write!(f, "{msg}")

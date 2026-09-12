@@ -13,3 +13,6 @@ devenv.local.yaml
 # Added by cargo
 
 /target
+
+# Modus compiler cache
+.modus-cache/

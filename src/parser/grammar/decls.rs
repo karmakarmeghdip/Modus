@@ -45,15 +45,19 @@ where
         .ignore_then(expr_parser())
         .then_ignore(just(Token::Semi))
         .map(|e| FunctionBody::Expr(Box::new(e)));
-    let fn_body = choice((block_body, expr_body));
+    let empty_body = just(Token::Semi).to(None);
+    let concrete_body = choice((block_body, expr_body)).map(Some);
+    let fn_body = choice((concrete_body, empty_body));
 
-    just(Token::Function)
-        .ignore_then(ident_parser())
+    just(Token::Export)
+        .or_not()
+        .then_ignore(just(Token::Function))
+        .then(ident_parser())
         .then(fn_params)
         .then(just(Token::Colon).ignore_then(type_parser()).or_not())
         .then(fn_body)
         .map_with(
-            |((((name, _), (type_params, params)), return_type), body), extra| {
+            |((((export_tok, (name, _)), (type_params, params)), return_type), body), extra| {
                 Spanned::new(
                     FunctionDecl {
                         name,
@@ -61,6 +65,7 @@ where
                         params,
                         return_type,
                         body,
+                        is_exported: export_tok.is_some(),
                     },
                     to_ast_span(extra.span()),
                 )
@@ -133,8 +138,10 @@ where
     let type_def = choice((union_def_prefixed, union_def_multi, alias_def))
         .map_with(|def, e| Spanned::new(def, to_ast_span(e.span())));
 
-    let type_decl = just(Token::Type)
-        .ignore_then(ident_parser())
+    let type_decl = just(Token::Export)
+        .or_not()
+        .then_ignore(just(Token::Type))
+        .then(ident_parser())
         .then(
             type_params
                 .clone()
@@ -144,16 +151,19 @@ where
         .then_ignore(just(Token::Eq))
         .then(type_def)
         .then_ignore(just(Token::Semi))
-        .map_with(|(((name, _), type_params), definition), extra| {
-            Spanned::new(
-                Declaration::Type(TypeDecl {
-                    name,
-                    type_params,
-                    definition,
-                }),
-                to_ast_span(extra.span()),
-            )
-        });
+        .map_with(
+            |(((export_tok, (name, _)), type_params), definition), extra| {
+                Spanned::new(
+                    Declaration::Type(TypeDecl {
+                        name,
+                        type_params,
+                        definition,
+                        is_exported: export_tok.is_some(),
+                    }),
+                    to_ast_span(extra.span()),
+                )
+            },
+        );
 
     // 3. Trait declaration: trait Drawable(Self) { function draw(self: Self): IO(void); }
     let trait_member = just(Token::Function)
@@ -173,8 +183,10 @@ where
             )
         });
 
-    let trait_decl = just(Token::Trait)
-        .ignore_then(ident_parser())
+    let trait_decl = just(Token::Export)
+        .or_not()
+        .then_ignore(just(Token::Trait))
+        .then(ident_parser())
         .then(type_params)
         .then(
             trait_member
@@ -182,12 +194,13 @@ where
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .map_with(|(((name, _), type_params), members), extra| {
+        .map_with(|(((export_tok, (name, _)), type_params), members), extra| {
             Spanned::new(
                 Declaration::Trait(TraitDecl {
                     name,
                     type_params,
                     members,
+                    is_exported: export_tok.is_some(),
                 }),
                 to_ast_span(extra.span()),
             )
@@ -218,13 +231,150 @@ where
     choice((function_decl, type_decl, trait_decl, impl_decl))
 }
 
+pub fn library_parser<'src, I>()
+-> impl Parser<'src, I, Spanned<String>, extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>,
+{
+    let str_val = select! { Token::Str(s) => s };
+    just(Token::Library)
+        .ignore_then(str_val)
+        .then_ignore(just(Token::Semi))
+        .map_with(|s, extra| Spanned::new(s, to_ast_span(extra.span())))
+}
+
+pub fn import_parser<'src, I>()
+-> impl Parser<'src, I, Spanned<ImportDecl>, extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>,
+{
+    let str_val = select! { Token::Str(s) => s };
+
+    let import_specifier = ident_parser()
+        .then(just(Token::As).ignore_then(ident_parser()).or_not())
+        .map(|((name, _), alias)| ImportSpecifier {
+            name,
+            alias: alias.map(|(a, _)| a),
+        });
+
+    let named_imports = import_specifier
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map(ImportClause::Named);
+
+    let namespace_import = just(Token::Star)
+        .then_ignore(just(Token::As))
+        .then(ident_parser())
+        .map(|(_, (alias, _))| ImportClause::Namespace(alias));
+
+    let clause = choice((named_imports, namespace_import)).then_ignore(just(Token::From));
+
+    let side_effect = str_val.map(|source| ImportDecl {
+        clause: ImportClause::SideEffect,
+        source,
+    });
+
+    let clause_import = clause
+        .then(str_val)
+        .map(|(clause, source)| ImportDecl { clause, source });
+
+    just(Token::Import)
+        .ignore_then(choice((clause_import, side_effect)))
+        .then_ignore(just(Token::Semi))
+        .map_with(|decl, extra| Spanned::new(decl, to_ast_span(extra.span())))
+}
+
+pub fn export_clause_parser<'src, I>()
+-> impl Parser<'src, I, Spanned<ExportDecl>, extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>,
+{
+    let str_val = select! { Token::Str(s) => s };
+
+    let export_specifier = ident_parser()
+        .then(just(Token::As).ignore_then(ident_parser()).or_not())
+        .map(|((name, _), alias)| ExportSpecifier {
+            name,
+            alias: alias.map(|(a, _)| a),
+        });
+
+    let named_exports = export_specifier
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .then(just(Token::From).ignore_then(str_val).or_not())
+        .map(|(specifiers, source)| ExportDecl::Named { specifiers, source });
+
+    let all_export = just(Token::Star)
+        .then(just(Token::As).ignore_then(ident_parser()).or_not())
+        .then_ignore(just(Token::From))
+        .then(str_val)
+        .map(|((_, alias), source)| ExportDecl::All {
+            alias: alias.map(|(a, _)| a),
+            source,
+        });
+
+    just(Token::Export)
+        .ignore_then(choice((named_exports, all_export)))
+        .then_ignore(just(Token::Semi))
+        .map_with(|decl, extra| Spanned::new(decl, to_ast_span(extra.span())))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ProgramItem {
+    Library(Spanned<String>),
+    Import(Spanned<ImportDecl>),
+    ExportClause(Spanned<ExportDecl>),
+    Declaration(Spanned<Declaration>),
+}
+
 pub fn program_parser<'src, I>()
 -> impl Parser<'src, I, Program, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>,
 {
-    decl_parser()
-        .repeated()
-        .collect::<Vec<_>>()
-        .map(|declarations| Program { declarations })
+    let item = choice((
+        library_parser().map(ProgramItem::Library),
+        import_parser().map(ProgramItem::Import),
+        export_clause_parser().map(ProgramItem::ExportClause),
+        decl_parser().map(ProgramItem::Declaration),
+    ));
+
+    item.repeated().collect::<Vec<_>>().map(|items| {
+        let mut library = None;
+        let mut imports = Vec::new();
+        let mut exports = Vec::new();
+        let mut declarations = Vec::new();
+
+        for it in items {
+            match it {
+                ProgramItem::Library(lib) => {
+                    if library.is_none() {
+                        library = Some(lib);
+                    }
+                }
+                ProgramItem::Import(imp) => imports.push(imp),
+                ProgramItem::ExportClause(exp) => exports.push(exp),
+                ProgramItem::Declaration(decl) => {
+                    if decl.node.is_exported() {
+                        exports.push(Spanned::new(
+                            ExportDecl::Declaration(decl.clone()),
+                            decl.span,
+                        ));
+                    }
+                    declarations.push(decl);
+                }
+            }
+        }
+
+        Program {
+            library,
+            imports,
+            exports,
+            declarations,
+        }
+    })
 }

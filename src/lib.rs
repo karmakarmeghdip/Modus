@@ -2,6 +2,7 @@ pub mod ast;
 pub mod backend;
 pub mod desugar;
 pub mod ir;
+pub mod modules;
 pub mod parser;
 pub mod typechecker;
 

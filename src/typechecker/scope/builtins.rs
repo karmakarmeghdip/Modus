@@ -94,6 +94,7 @@ impl Environment {
                 return_type: Type::io(Type::void()),
                 is_effectful: true,
                 span: Span::default(),
+                symbol_name: None,
             },
         );
         self.traits.insert(

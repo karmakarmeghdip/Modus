@@ -44,8 +44,21 @@ pub fn lower_program(desugared: &DesugaredProgram) -> AnfProgram {
         }
     }
 
+    let extern_functions = desugared
+        .extern_functions
+        .iter()
+        .map(|e| AnfExternFunction {
+            name: e.name.clone(),
+            symbol_name: e.symbol_name.clone(),
+            param_types: e.param_types.clone(),
+            return_type: e.return_type.clone(),
+            is_effectful: e.is_effectful,
+        })
+        .collect();
+
     AnfProgram {
         functions,
+        extern_functions,
         types,
         traits,
         impls,

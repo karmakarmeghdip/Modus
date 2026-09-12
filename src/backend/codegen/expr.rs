@@ -98,7 +98,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
 
                 let call_site = self.builder.build_call(fn_val, &llvm_args, "call").unwrap();
-                call_site.set_call_convention(8); // fastcc
+                call_site.set_call_convention(fn_val.get_call_conventions());
 
                 Ok(call_site
                     .try_as_basic_value()
@@ -175,7 +175,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_call(fn_val, &llvm_args, "mcall")
                     .unwrap();
-                call_site.set_call_convention(8);
+                call_site.set_call_convention(fn_val.get_call_conventions());
 
                 Ok(call_site
                     .try_as_basic_value()

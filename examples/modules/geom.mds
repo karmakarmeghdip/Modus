@@ -1,0 +1,18 @@
+import { square } from "./math.mds";
+
+export type Point = {
+    x: i32,
+    y: i32,
+};
+
+export function distance_sq(p1: Point, p2: Point): i32 {
+    let dx: i32 = p1.x - p2.x;
+    let dy: i32 = p1.y - p2.y;
+    return square(dx) + square(dy);
+}
+
+export function manhattan(p1: Point, p2: Point): i32 {
+    let dx: i32 = p1.x - p2.x;
+    let dy: i32 = p1.y - p2.y;
+    return dx + dy;
+}

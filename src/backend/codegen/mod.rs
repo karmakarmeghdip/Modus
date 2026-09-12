@@ -65,6 +65,11 @@ impl<'ctx> CodeGen<'ctx> {
 
     /// Compiles an entire `AnfProgram` into the LLVM module.
     pub fn compile_program(&mut self, prog: &AnfProgram) -> Result<(), String> {
+        // 0. Declare imported external functions
+        for ext in &prog.extern_functions {
+            self.declare_external_function(ext);
+        }
+
         // 1. Declare all functions first to support mutual and forward references
         for func in &prog.functions {
             self.declare_function(func);
@@ -93,6 +98,22 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
+    /// Declares an imported external function signature in the LLVM module.
+    pub(crate) fn declare_external_function(&mut self, ext: &AnfExternFunction) {
+        let fn_type = self
+            .type_lowerer
+            .function_type(&ext.param_types, &ext.return_type);
+        let fn_val = self.module.add_function(&ext.symbol_name, fn_type, None);
+        // Standard C calling convention (ccc = 0) for dynamic linking / shared library ABI
+        fn_val.set_call_conventions(0);
+        self.functions.insert(ext.symbol_name.clone(), fn_val);
+        self.functions.insert(ext.name.clone(), fn_val);
+        self.fn_ret_types
+            .insert(ext.symbol_name.clone(), ext.return_type.clone());
+        self.fn_ret_types
+            .insert(ext.name.clone(), ext.return_type.clone());
+    }
+
     /// Declares a function signature in the LLVM module.
     pub(crate) fn declare_function(&mut self, func: &AnfFunction) {
         let param_types: Vec<Type> = func.params.iter().map(|(_, ty)| ty.clone()).collect();
@@ -102,9 +123,10 @@ impl<'ctx> CodeGen<'ctx> {
 
         let fn_val = self.module.add_function(&func.name, fn_type, None);
 
-        // Calling conventions from SPEC:
-        // entry/FFI `ccc`, internal `fastcc`
-        let call_conv = if func.name == "main" { 0 } else { 8 };
+        // Entry point and exported library functions use standard calling convention (ccc = 0)
+        // Unexported internal functions use fastcc (8)
+        let is_exported_or_entry = func.name == "main" || func.name.starts_with("_modus_M_");
+        let call_conv = if is_exported_or_entry { 0 } else { 8 };
         fn_val.set_call_conventions(call_conv);
 
         self.functions.insert(func.name.clone(), fn_val);

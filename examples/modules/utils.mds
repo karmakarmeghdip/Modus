@@ -1,0 +1,4 @@
+// Utility module demonstrating side-effect imports
+export function log_init(): i32 {
+    return 1;
+}

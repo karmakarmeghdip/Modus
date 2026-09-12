@@ -107,6 +107,7 @@ impl<'ctx> CodeGen<'ctx> {
             &inkwell::targets::InitializationConfig::default(),
         )
         .map_err(|e| e.to_string())?;
+
         let ee = self
             .module
             .create_jit_execution_engine(inkwell::OptimizationLevel::Aggressive)

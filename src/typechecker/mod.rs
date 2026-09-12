@@ -21,52 +21,81 @@ use crate::ast::{
 };
 use std::collections::HashMap;
 
-/// Type-check a complete Modus AST program
-pub fn check_program(program: &Program) -> Result<Environment, TypeError> {
-    let mut env = Environment::new();
+/// Type-check a complete Modus AST program using a provided environment.
+pub fn check_program_with_env(program: &Program, env: &mut Environment) -> Result<(), TypeError> {
+    // Pass 0: Verify function body presence / absence invariant
+    let is_header = program.library.is_some();
+    for decl in &program.declarations {
+        if let Declaration::Function(func_decl) = &decl.node {
+            if is_header {
+                if func_decl.body.is_some() {
+                    return Err(TypeError::new(
+                        TypeErrorKind::UnexpectedFunctionBodyInHeader {
+                            function_name: func_decl.name.clone(),
+                        },
+                        Some(decl.span),
+                    ));
+                }
+            } else if func_decl.body.is_none() {
+                return Err(TypeError::new(
+                    TypeErrorKind::MissingFunctionBody {
+                        function_name: func_decl.name.clone(),
+                    },
+                    Some(decl.span),
+                ));
+            }
+        }
+    }
 
     // Pass 1: Register all type declarations
     for decl in &program.declarations {
         if let Declaration::Type(type_decl) = &decl.node {
-            register_type_decl(&mut env, type_decl, decl.span)?;
+            register_type_decl(env, type_decl, decl.span)?;
         }
     }
 
     // Pass 2: Register all trait declarations
     for decl in &program.declarations {
         if let Declaration::Trait(trait_decl) = &decl.node {
-            register_trait_decl(&mut env, trait_decl, decl.span)?;
+            register_trait_decl(env, trait_decl, decl.span)?;
         }
     }
 
     // Pass 3: Register and verify all impl blocks
     for decl in &program.declarations {
         if let Declaration::Impl(impl_decl) = &decl.node {
-            register_impl_decl(&mut env, impl_decl, decl.span)?;
+            register_impl_decl(env, impl_decl, decl.span)?;
         }
     }
 
     // Pass 4: Register all function signatures and verify purity/dead-computation rules
     for decl in &program.declarations {
         if let Declaration::Function(func_decl) = &decl.node {
-            register_function_sig(&mut env, func_decl, decl.span)?;
+            register_function_sig(env, func_decl, decl.span)?;
         }
     }
 
     // Pass 5: Type check all function bodies
     for decl in &program.declarations {
         if let Declaration::Function(func_decl) = &decl.node {
-            check_function_body(&mut env, func_decl)?;
+            check_function_body(env, func_decl)?;
         }
     }
 
     // Pass 6: Type check all impl method bodies
     for decl in &program.declarations {
         if let Declaration::Impl(impl_decl) = &decl.node {
-            check_impl_bodies(&mut env, impl_decl)?;
+            check_impl_bodies(env, impl_decl)?;
         }
     }
 
+    Ok(())
+}
+
+/// Type-check a complete Modus AST program
+pub fn check_program(program: &Program) -> Result<Environment, TypeError> {
+    let mut env = Environment::new();
+    check_program_with_env(program, &mut env)?;
     Ok(env)
 }
 
@@ -188,6 +217,7 @@ fn register_trait_decl(
                 return_type: ret_ty,
                 is_effectful,
                 span: member.span,
+                symbol_name: None,
             },
         );
     }
@@ -238,6 +268,7 @@ fn register_impl_decl(
                 return_type: ret_ty,
                 is_effectful,
                 span: m.span,
+                symbol_name: None,
             },
         );
     }
@@ -296,6 +327,7 @@ fn register_function_sig(
         return_type,
         is_effectful,
         span,
+        symbol_name: None,
     };
 
     env.define_function(sig)?;
@@ -332,7 +364,12 @@ fn check_function_body(env: &mut Environment, func_decl: &FunctionDecl) -> Resul
             .define_var(name.clone(), ty.clone(), sig.span)?;
     }
 
-    match &func_decl.body {
+    let body = match &func_decl.body {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+
+    match body {
         FunctionBody::Expr(expr) => {
             if let Some(inner) = sig.return_type.unwrap_io() {
                 let inner_clone = inner.clone();
@@ -384,7 +421,19 @@ fn check_impl_bodies(env: &mut Environment, impl_decl: &ImplDecl) -> Result<(), 
                 .define_var(param.name.clone(), p_ty, method.span)?;
         }
 
-        match &method.node.body {
+        let body = match &method.node.body {
+            Some(b) => b,
+            None => {
+                return Err(TypeError::new(
+                    TypeErrorKind::MissingFunctionBody {
+                        function_name: method.node.name.clone(),
+                    },
+                    Some(method.span),
+                ));
+            }
+        };
+
+        match body {
             FunctionBody::Expr(expr) => {
                 inferrer.check_expr(expr, &ret_ty)?;
             }

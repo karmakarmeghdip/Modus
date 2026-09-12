@@ -11,8 +11,18 @@ use crate::ast::{BinaryOp, Literal, Span, TraitDecl, TypeDecl, TypeParam};
 use crate::typechecker::Type;
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct DesugaredExternFunction {
+    pub name: String,
+    pub symbol_name: String,
+    pub param_types: Vec<Type>,
+    pub return_type: Type,
+    pub is_effectful: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct DesugaredProgram {
     pub declarations: Vec<DesugaredDecl>,
+    pub extern_functions: Vec<DesugaredExternFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

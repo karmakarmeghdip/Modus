@@ -1,0 +1,7 @@
+export function cube(x: i32): i32 {
+    return x * x * x;
+}
+
+export function multiply(a: i32, b: i32): i32 {
+    return a * b;
+}

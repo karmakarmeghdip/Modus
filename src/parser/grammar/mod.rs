@@ -15,8 +15,11 @@ pub mod patterns;
 pub mod stmts;
 pub mod types;
 
-pub use common::{Span, ident_parser, to_ast_span};
-pub use decls::{decl_parser, function_decl_internal, program_parser};
+pub use common::{Span, ident_parser, str_parser, to_ast_span};
+pub use decls::{
+    decl_parser, export_clause_parser, function_decl_internal, import_parser, library_parser,
+    program_parser,
+};
 pub use exprs::expr_parser;
 pub use patterns::pattern_parser;
 pub use stmts::{block_parser, block_parser_internal, stmt_parser, stmt_parser_internal};

@@ -13,6 +13,13 @@ pub struct FunctionSig {
     pub return_type: Type,
     pub is_effectful: bool,
     pub span: Span,
+    pub symbol_name: Option<String>,
+}
+
+impl FunctionSig {
+    pub fn symbol_name(&self) -> &str {
+        self.symbol_name.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// Represents information about a type definition (alias or union)

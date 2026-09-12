@@ -1,0 +1,14 @@
+import { sum_range, factorial } from "./math.mds";
+import * as Geo from "./geom.mds";
+import "./utils.mds";
+
+function main(): i32 {
+    let p1: Geo.Point = { x: 10, y: 20 };
+    let p2: Geo.Point = { x: 7, y: 16 };
+    let d: i32 = Geo.distance_sq(p1, p2); // dx=3, dy=4 -> 3^2 + 4^2 = 25
+
+    let s: i32 = sum_range(10, 0); // 55
+    let f: i32 = factorial(4, 1);  // 24
+
+    return d + s + f; // 25 + 55 + 24 = 104
+}

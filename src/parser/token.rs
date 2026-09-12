@@ -18,6 +18,11 @@ pub enum Token {
     Return,
     True,
     False,
+    Import,
+    Export,
+    From,
+    As,
+    Library,
 
     // Forbidden keywords (recognized to reject with explicit diagnostics)
     Fn,
@@ -83,6 +88,11 @@ impl fmt::Display for Token {
             Token::Return => write!(f, "'return'"),
             Token::True => write!(f, "'true'"),
             Token::False => write!(f, "'false'"),
+            Token::Import => write!(f, "'import'"),
+            Token::Export => write!(f, "'export'"),
+            Token::From => write!(f, "'from'"),
+            Token::As => write!(f, "'as'"),
+            Token::Library => write!(f, "'library'"),
             Token::Fn => write!(f, "'fn'"),
             Token::Mut => write!(f, "'mut'"),
             Token::While => write!(f, "'while'"),

@@ -114,6 +114,15 @@ impl Environment {
                     if segments[0] == "Self" || generic_in_scope.iter().any(|g| g == &segments[0]) {
                         return Ok(Type::GenericParam(name));
                     }
+                    if self.types.contains_key(&name) {
+                        return Ok(Type::Named {
+                            name,
+                            args: Vec::new(),
+                        });
+                    }
+                    if self.traits.contains_key(&name) {
+                        return Ok(Type::TraitObject(name));
+                    }
                 }
                 Err(TypeError::new(TypeErrorKind::UndeclaredType(name), span))
             }

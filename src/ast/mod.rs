@@ -34,9 +34,50 @@ impl<T> Spanned<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
+    pub library: Option<Spanned<String>>,
+    pub imports: Vec<Spanned<ImportDecl>>,
+    pub exports: Vec<Spanned<ExportDecl>>,
     pub declarations: Vec<Spanned<Declaration>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportSpecifier {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportClause {
+    Named(Vec<ImportSpecifier>),
+    Namespace(String),
+    SideEffect,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    pub clause: ImportClause,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportSpecifier {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExportDecl {
+    Declaration(Spanned<Declaration>),
+    Named {
+        specifiers: Vec<ExportSpecifier>,
+        source: Option<String>,
+    },
+    All {
+        alias: Option<String>,
+        source: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +86,17 @@ pub enum Declaration {
     Type(TypeDecl),
     Trait(TraitDecl),
     Impl(ImplDecl),
+}
+
+impl Declaration {
+    pub fn is_exported(&self) -> bool {
+        match self {
+            Declaration::Function(f) => f.is_exported,
+            Declaration::Type(t) => t.is_exported,
+            Declaration::Trait(tr) => tr.is_exported,
+            Declaration::Impl(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,7 +123,8 @@ pub struct FunctionDecl {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<Type>>,
-    pub body: FunctionBody,
+    pub body: Option<FunctionBody>,
+    pub is_exported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +132,7 @@ pub struct TypeDecl {
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub definition: Spanned<TypeDef>,
+    pub is_exported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +159,7 @@ pub struct TraitDecl {
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub members: Vec<Spanned<TraitMember>>,
+    pub is_exported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

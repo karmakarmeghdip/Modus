@@ -20,3 +20,14 @@ where
     }
     .map_with(|s, extra| (s, extra.span()))
 }
+
+pub fn str_parser<'src, I>()
+-> impl Parser<'src, I, (String, Span), extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>,
+{
+    select! {
+        Token::Str(s) => s,
+    }
+    .map_with(|s, extra| (s, extra.span()))
+}

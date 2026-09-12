@@ -30,7 +30,39 @@ pub fn desugar_program(program: &Program, env: &Environment) -> DesugaredProgram
         }
     }
 
-    DesugaredProgram { declarations }
+    let local_fn_names: std::collections::HashSet<&str> = program
+        .declarations
+        .iter()
+        .filter_map(|d| match &d.node {
+            ast::Declaration::Function(f) => Some(f.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let mut extern_functions = Vec::new();
+    let mut seen_symbols = std::collections::HashSet::new();
+    for sig in env.functions.values() {
+        if local_fn_names.contains(sig.name.as_str()) {
+            continue;
+        }
+        let Some(sym) = &sig.symbol_name else {
+            continue;
+        };
+        if seen_symbols.insert(sym.clone()) {
+            extern_functions.push(DesugaredExternFunction {
+                name: sig.name.clone(),
+                symbol_name: sym.clone(),
+                param_types: sig.params.iter().map(|(_, ty)| ty.clone()).collect(),
+                return_type: sig.return_type.clone(),
+                is_effectful: sig.is_effectful,
+            });
+        }
+    }
+
+    DesugaredProgram {
+        declarations,
+        extern_functions,
+    }
 }
 
 struct DesugarContext<'a> {
@@ -86,6 +118,7 @@ impl<'a> DesugarContext<'a> {
                 return_type,
                 is_effectful,
                 span,
+                symbol_name: None,
             }
         };
         let old_ret = self.enclosing_fn_ret_type.replace(sig.return_type.clone());
@@ -116,18 +149,19 @@ impl<'a> DesugarContext<'a> {
         }
 
         let body = match &func.body {
-            FunctionBody::Expr(e) => {
+            Some(FunctionBody::Expr(e)) => {
                 let desugared_e = self.desugar_expr(e);
                 vec![DesugaredStmt::Return(Some(desugared_e), e.span)]
             }
-            FunctionBody::Block(stmts) => self.desugar_stmts(stmts),
+            Some(FunctionBody::Block(stmts)) => self.desugar_stmts(stmts),
+            None => vec![],
         };
 
         self.inferrer.env.exit_scope();
         self.enclosing_fn_ret_type = old_ret;
 
         DesugaredFunction {
-            name: func.name.clone(),
+            name: sig.symbol_name().to_string(),
             type_params: func.type_params.clone(),
             params: sig.params,
             return_type: sig.return_type,
@@ -262,7 +296,21 @@ impl<'a> DesugarContext<'a> {
             }
 
             ast::Expr::Call { callee, args } => {
-                let desugared_callee = self.desugar_expr(callee);
+                let mut desugared_callee = self.desugar_expr(callee);
+                if let DesugaredExprKind::Ident(ref name) = desugared_callee.kind {
+                    let sym = self
+                        .inferrer
+                        .env
+                        .lookup_function(name)
+                        .and_then(|sig| sig.symbol_name.clone());
+                    if let Some(sym) = sym {
+                        desugared_callee = DesugaredExpr::new(
+                            DesugaredExprKind::Ident(sym),
+                            desugared_callee.ty,
+                            desugared_callee.span,
+                        );
+                    }
+                }
                 let desugared_args = args.iter().map(|a| self.desugar_expr(a)).collect();
                 DesugaredExpr::new(
                     DesugaredExprKind::Call {
@@ -279,6 +327,33 @@ impl<'a> DesugarContext<'a> {
                 method,
                 args,
             } => {
+                if let ast::Expr::Ident(ns) = &receiver.node {
+                    let qualified_dot = format!("{ns}.{method}");
+                    let qualified_under = format!("{ns}_{method}");
+                    let target_fn = self
+                        .inferrer
+                        .env
+                        .lookup_function(&qualified_dot)
+                        .or_else(|| self.inferrer.env.lookup_function(&qualified_under));
+
+                    if let Some(sig) = target_fn {
+                        let callee_name = sig.symbol_name().to_string();
+                        let desugared_args = args.iter().map(|a| self.desugar_expr(a)).collect();
+                        return DesugaredExpr::new(
+                            DesugaredExprKind::Call {
+                                callee: Box::new(DesugaredExpr::new(
+                                    DesugaredExprKind::Ident(callee_name),
+                                    expr_ty.clone(),
+                                    receiver.span,
+                                )),
+                                args: desugared_args,
+                            },
+                            expr_ty,
+                            expr.span,
+                        );
+                    }
+                }
+
                 let desugared_receiver = self.desugar_expr(receiver);
                 let desugared_args = args.iter().map(|a| self.desugar_expr(a)).collect();
                 DesugaredExpr::new(

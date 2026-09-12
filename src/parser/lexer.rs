@@ -107,6 +107,11 @@ pub fn lexer<'src>()
             "return" => Token::Return,
             "true" => Token::True,
             "false" => Token::False,
+            "import" => Token::Import,
+            "export" => Token::Export,
+            "from" => Token::From,
+            "as" => Token::As,
+            "library" => Token::Library,
 
             // Forbidden keywords (recognized to reject with explicit diagnostics)
             "fn" => Token::Fn,

@@ -78,7 +78,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_call(fn_val, &llvm_args, "tailcall")
                     .unwrap();
-                call_site.set_call_convention(8); // fastcc
+                call_site.set_call_convention(fn_val.get_call_conventions());
                 // Direct recursion tail call optimization (`musttail`)
                 call_site.set_tail_call(true);
 
