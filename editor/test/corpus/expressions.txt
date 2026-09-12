@@ -1,0 +1,86 @@
+==================
+Control Flow and Let
+==================
+function check_val(x: i32): i32 {
+    let y = if (x > 0) {
+        return x;
+    } else {
+        return 0;
+    };
+    return y;
+}
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (primitive_type)))
+    return_type: (primitive_type)
+    body: (block
+      (let_statement
+        name: (identifier)
+        value: (if_expression
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer_literal))
+          consequence: (block
+            (return_statement
+              value: (identifier)))
+          alternative: (block
+            (return_statement
+              value: (integer_literal)))))
+      (return_statement
+        value: (identifier)))))
+
+==================
+Match and Closures
+==================
+function demo(opt: Option(i32)): i32 {
+    let f = (x: i32) => x + 1;
+    return match (opt) {
+        Some(v) => f(v),
+        None => 0,
+    };
+}
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (generic_type
+          name: (identifier)
+          arguments: (tuple_type
+            (primitive_type)))))
+    return_type: (primitive_type)
+    body: (block
+      (let_statement
+        name: (identifier)
+        value: (closure_expression
+          parameters: (parameter_list
+            (parameter
+              name: (identifier)
+              type: (primitive_type)))
+          body: (binary_expression
+            left: (identifier)
+            right: (integer_literal))))
+      (return_statement
+        value: (match_expression
+          value: (parenthesized_expression
+            (identifier))
+          (match_arm
+            pattern: (variant_pattern
+              variant: (identifier)
+              patterns: (identifier))
+            body: (call_expression
+              function: (identifier)
+              arguments: (argument_list
+                (identifier))))
+          (match_arm
+            pattern: (identifier)
+            body: (integer_literal)))))))

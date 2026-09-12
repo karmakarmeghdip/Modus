@@ -180,6 +180,20 @@ impl<'ctx> CodeGen<'ctx> {
             } => {
                 let llvm_val = self.compile_expr(value, ty)?;
                 self.variables.insert(var.clone(), llvm_val);
+
+                if let AnfExpr::Record { fields } = value {
+                    let mut idx_map = BTreeMap::new();
+                    for (i, (f_name, _)) in fields.iter().enumerate() {
+                        idx_map.insert(f_name.clone(), (i + 1) as u32);
+                    }
+                    self.record_field_indices.insert(var.clone(), idx_map);
+                } else if let Type::Record(flds) = ty {
+                    let mut idx_map = BTreeMap::new();
+                    for (i, (f_name, _)) in flds.iter().enumerate() {
+                        idx_map.insert(f_name.clone(), (i + 1) as u32);
+                    }
+                    self.record_field_indices.insert(var.clone(), idx_map);
+                }
             }
 
             AnfStmt::Expr(expr) => {

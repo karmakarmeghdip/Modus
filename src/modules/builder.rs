@@ -35,7 +35,7 @@ pub fn type_to_string(ty: &ast::Type) -> String {
             ast::PrimitiveType::F32 => "f32".to_string(),
             ast::PrimitiveType::F64 => "f64".to_string(),
             ast::PrimitiveType::Bool => "bool".to_string(),
-            ast::PrimitiveType::String => "string".to_string(),
+            ast::PrimitiveType::String => "String".to_string(),
             ast::PrimitiveType::Void => "void".to_string(),
         },
         ast::Type::Generic { name, type_args } => {
@@ -442,8 +442,13 @@ pub fn build_executable(
 /// Pre-loads any dynamic `.so` libraries and compiles dependency modules.
 pub fn jit_run_module_graph(entry_file: &Path) -> Result<ExecutionResult, String> {
     let graph = ModuleGraph::build(entry_file).map_err(|e| e.to_string())?;
+    jit_run_graph(&graph)
+}
+
+/// JIT-executes a validated ModuleGraph.
+pub fn jit_run_graph(graph: &ModuleGraph) -> Result<ExecutionResult, String> {
     let (_interfaces, envs) =
-        super::check_module_graph_with_envs(&graph).map_err(|e| e.to_string())?;
+        super::check_module_graph_with_envs(graph).map_err(|e| e.to_string())?;
 
     // Load any referenced dynamic libraries permanently into LLVM execution engine
     for node in graph.modules.values() {

@@ -7,7 +7,6 @@
 //! - Identifies dead heap variables requiring `dec_ref`.
 //! - Distinguishes unboxed primitive types from heap-allocated RC types.
 
-use crate::ast::PrimitiveType;
 use crate::ir::closure::pattern_bound_vars;
 use crate::ir::node::*;
 use crate::typechecker::Type;
@@ -17,8 +16,7 @@ use std::collections::{HashMap, HashSet};
 /// Primitives (numbers, bool, void, unit) are unboxed and require no RC.
 pub fn is_heap_type(ty: &Type) -> bool {
     match ty {
-        Type::Primitive(p) => matches!(p, PrimitiveType::String),
-        Type::Unit => false,
+        Type::Primitive(_) | Type::Unit => false,
         Type::Named { name, args } => {
             if name == "Pointer" || name == "CString" {
                 return false;

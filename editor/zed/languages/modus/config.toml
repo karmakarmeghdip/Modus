@@ -1,0 +1,17 @@
+name = "Modus"
+grammar = "modus"
+path_suffixes = ["mds"]
+line_comments = ["// "]
+block_comment = ["/*", "*/"]
+tab_size = 4
+hard_tabs = false
+language_servers = ["modus-lsp"]
+
+brackets = [
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "[", end = "]", close = true, newline = true },
+    { start = "(", end = ")", close = true, newline = true },
+    { start = "\"", end = "\"", close = true, newline = false },
+]
+
+autoclose_before = ";:.,=}])> \n\t"

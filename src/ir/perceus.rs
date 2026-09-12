@@ -257,6 +257,11 @@ impl PerceusCtx {
                 | AnfExpr::Call { .. }
                 | AnfExpr::MethodCall { .. }
                 | AnfExpr::CallClosure { .. }
+                | AnfExpr::Atom(Atom::Var(_))
+                | AnfExpr::Unary {
+                    op: crate::desugar::DesugaredUnaryOp::Perform,
+                    ..
+                }
         )
     }
 

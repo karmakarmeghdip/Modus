@@ -1,0 +1,20 @@
+# Modus language configuration for Helix editor
+
+[language-server.modus-lsp]
+command = "modus"
+args = ["lsp"]
+
+[[language]]
+name = "modus"
+scope = "source.modus"
+injection-regex = "modus"
+file-types = ["mds"]
+comment-token = "//"
+block-comment-tokens = { start = "/*", end = "*/" }
+indent = { tab-width = 4, unit = "    " }
+roots = ["Cargo.toml", ".git"]
+language-servers = ["modus-lsp"]
+
+[[grammar]]
+name = "modus"
+source = { path = "editor" }

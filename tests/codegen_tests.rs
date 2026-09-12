@@ -1,3 +1,5 @@
+#![cfg(feature = "llvm")]
+
 use inkwell::context::Context;
 use modus::backend::CodeGen;
 use modus::desugar::desugar_program;

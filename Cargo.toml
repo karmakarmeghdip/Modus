@@ -11,10 +11,18 @@ path = "src/lib.rs"
 name = "modus"
 path = "src/main.rs"
 
+[features]
+default = ["lsp"]
+llvm = ["dep:inkwell"]
+lsp = ["dep:tower-lsp", "dep:tokio", "dep:tree-sitter-modus"]
+
 [dependencies]
 chumsky = { version = "1.0.0-alpha.8", features = ["pratt"] }
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm23-1"] }
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm23-1"], optional = true }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+tower-lsp = { version = "0.20", optional = true }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync"], optional = true }
+tree-sitter-modus = { path = "editor", optional = true }
 

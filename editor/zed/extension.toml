@@ -1,0 +1,12 @@
+id = "modus"
+name = "Modus"
+version = "0.1.0"
+schema_version = 1
+authors = ["Modus Authors"]
+description = "Modus language support for Zed (.mds)"
+repository = "https://github.com/modus-lang/modus"
+
+[grammars.modus]
+repository = "https://github.com/modus-lang/modus"
+commit = "HEAD"
+path = "editor"

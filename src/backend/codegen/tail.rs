@@ -182,7 +182,10 @@ impl<'ctx> CodeGen<'ctx> {
                                 if variant == "Ok" || variant == "Some" || variant == "CircleShape"
                                 {
                                     0
-                                } else if variant == "RectShape" {
+                                } else if variant == "Err"
+                                    || variant == "None"
+                                    || variant == "RectShape"
+                                {
                                     1
                                 } else {
                                     2

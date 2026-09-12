@@ -1,0 +1,74 @@
+==================
+Basic Function
+==================
+function add(a: i32, b: i32): i32 {
+    return a + b;
+}
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (primitive_type))
+      (parameter
+        name: (identifier)
+        type: (primitive_type)))
+    return_type: (primitive_type)
+    body: (block
+      (return_statement
+        value: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+==================
+Expression Body Function
+==================
+function square(x: i32): i32 => x * x;
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (primitive_type)))
+    return_type: (primitive_type)
+    body: (binary_expression
+      left: (identifier)
+      right: (identifier))))
+
+==================
+Generic Function with Bound
+==================
+function render(T: Drawable)(item: T): IO(void) {
+    perform item.draw();
+}
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    type_parameters: (type_parameters
+      (type_param
+        name: (identifier)
+        bound: (identifier)))
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (identifier)))
+    return_type: (generic_type
+      name: (identifier)
+      arguments: (tuple_type
+        (primitive_type)))
+    body: (block
+      (expression_statement
+        (unary_expression
+          argument: (call_expression
+            function: (field_expression
+              argument: (identifier)
+              field: (identifier))
+            arguments: (argument_list)))))))

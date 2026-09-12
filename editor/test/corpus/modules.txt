@@ -1,0 +1,59 @@
+==================
+Module Imports and Exports
+==================
+library "my_math";
+
+import { add, sub as subtract } from "./math.mds";
+import * as Utils from "./utils.mds";
+import "./effects.mds";
+
+export function double(x: i32): i32 {
+    return add(x, x);
+}
+
+export { double as mult2 };
+export * from "./calc.mds";
+---
+
+(source_file
+  (library_declaration
+    name: (string_literal))
+  (import_declaration
+    (import_clause
+      (named_imports
+        (import_specifier
+          name: (identifier))
+        (import_specifier
+          name: (identifier)
+          alias: (identifier))))
+    source: (string_literal))
+  (import_declaration
+    (import_clause
+      (namespace_import
+        alias: (identifier)))
+    source: (string_literal))
+  (import_declaration
+    source: (string_literal))
+  (export_declaration
+    (function_declaration
+      name: (identifier)
+      parameters: (parameter_list
+        (parameter
+          name: (identifier)
+          type: (primitive_type)))
+      return_type: (primitive_type)
+      body: (block
+        (return_statement
+          value: (call_expression
+            function: (identifier)
+            arguments: (argument_list
+              (identifier)
+              (identifier)))))))
+  (export_declaration
+    (named_exports
+      (export_specifier
+        name: (identifier)
+        alias: (identifier))))
+  (export_declaration
+    (all_export)
+    source: (string_literal)))

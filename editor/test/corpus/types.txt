@@ -1,0 +1,55 @@
+==================
+Record Type Alias
+==================
+type Point = {
+    x: i32,
+    y: i32,
+};
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    definition: (record_type
+      (record_type_field
+        name: (identifier)
+        type: (primitive_type))
+      (record_type_field
+        name: (identifier)
+        type: (primitive_type)))))
+
+==================
+Discriminated Union
+==================
+type Option(T) = Some(T) | None;
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    type_parameters: (type_parameters
+      (type_param
+        name: (identifier)))
+    definition: (union_type
+      (variant_declaration
+        name: (identifier)
+        parameters: (tuple_type
+          (identifier)))
+      (variant_declaration
+        name: (identifier)))))
+
+==================
+Function and Array Types
+==================
+type Handler = [(i32, String) => bool];
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    definition: (array_type
+      element: (function_type
+        parameters: (tuple_type
+          (primitive_type)
+          (primitive_type))
+        return_type: (primitive_type)))))

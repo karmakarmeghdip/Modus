@@ -16,6 +16,9 @@ pub enum ResolveError {
         path: PathBuf,
         message: String,
     },
+    UnknownStdModule {
+        module: String,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
@@ -51,6 +54,12 @@ impl std::fmt::Display for ResolveError {
                     message
                 )
             }
+            Self::UnknownStdModule { module } => {
+                write!(
+                    f,
+                    "Unknown standard library module '{module}'. Available modules: std:io"
+                )
+            }
         }
     }
 }
@@ -62,6 +71,16 @@ pub fn resolve_module_path(
     import_specifier: &str,
     importing_file: Option<&Path>,
 ) -> Result<PathBuf, ResolveError> {
+    if import_specifier.starts_with("std:") {
+        if super::stdlib::is_std_module(import_specifier) {
+            return Ok(PathBuf::from(import_specifier));
+        } else {
+            return Err(ResolveError::UnknownStdModule {
+                module: import_specifier.to_string(),
+            });
+        }
+    }
+
     let raw_path = PathBuf::from(import_specifier);
 
     // Determine target path relative to importing file's parent directory if relative

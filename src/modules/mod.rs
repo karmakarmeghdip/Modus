@@ -4,21 +4,26 @@
 //! - Module resolution and path canonicalization ([`resolver`])
 //! - Dependency graph construction, cycle detection, and topological stratification ([`graph`])
 
+#[cfg(feature = "llvm")]
 pub mod builder;
 pub mod cache;
 pub mod graph;
 pub mod interface;
 pub mod mangling;
 pub mod resolver;
+pub mod stdlib;
 
+#[cfg(feature = "llvm")]
 pub use builder::{
-    build_executable, build_shared_library, emit_export_map_header, jit_run_module_graph,
+    build_executable, build_shared_library, emit_export_map_header, jit_run_graph,
+    jit_run_module_graph,
 };
 pub use cache::{CacheStore, compute_fingerprint, hash_source};
 pub use graph::{GraphError, ModuleGraph, ModuleId, ModuleNode};
 pub use interface::ModuleInterface;
 pub use mangling::{is_mangled_symbol, mangle_symbol, module_ident_from_path};
 pub use resolver::{ResolveError, resolve_module_path};
+pub use stdlib::{get_std_module_source, is_std_module, is_std_module_path};
 
 use crate::typechecker::Environment;
 use crate::typechecker::error::{TypeError, TypeErrorKind};

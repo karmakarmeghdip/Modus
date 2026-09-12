@@ -1,0 +1,30 @@
+{
+  "name": "tree-sitter-modus",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Modus programming language",
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "modus",
+    "compiler"
+  ],
+  "author": "Modus Authors",
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.22.0",
+    "prebuildify": "^6.0.0"
+  },
+  "files": [
+    "grammar.js",
+    "tree-sitter.json",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/**",
+    "queries/**",
+    "src/**"
+  ]
+}

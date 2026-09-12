@@ -338,10 +338,19 @@ impl<'ctx> CodeGen<'ctx> {
 
             AnfExpr::FieldAccess { receiver, field } => {
                 let recv_val = self.eval_atom(receiver)?;
-                if !recv_val.is_pointer_value() {
+                let ptr = if recv_val.is_pointer_value() {
+                    recv_val.into_pointer_value()
+                } else if recv_val.is_int_value() {
+                    self.builder
+                        .build_int_to_ptr(
+                            recv_val.into_int_value(),
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            "recv_ptr",
+                        )
+                        .unwrap()
+                } else {
                     return Err(format!("Field access on non-pointer: {field}"));
-                }
-                let ptr = recv_val.into_pointer_value();
+                };
 
                 // Look up field index
                 let field_idx = if let Some(var_name) = receiver.as_var() {
@@ -834,8 +843,8 @@ impl<'ctx> CodeGen<'ctx> {
         }
         // Fallback default index
         match field {
-            "x" | "first" | "radius" | "host" | "value" => 1,
-            "y" | "second" | "w" | "port" => 2,
+            "x" | "first" | "radius" | "host" | "value" | "code" => 1,
+            "y" | "second" | "w" | "port" | "message" => 2,
             "z" | "h" | "tls" => 3,
             _ => 1,
         }

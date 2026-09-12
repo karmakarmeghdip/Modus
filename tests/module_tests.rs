@@ -554,6 +554,7 @@ function main(): i32 {
 }
 
 #[test]
+#[cfg(feature = "llvm")]
 fn test_multimodule_aot_and_jit_execution() {
     let temp_dir =
         std::env::temp_dir().join(format!("modus_test_mmod_exec_{}", std::process::id()));
@@ -624,6 +625,7 @@ function main(): i32 {
 }
 
 #[test]
+#[cfg(feature = "llvm")]
 fn test_multimodule_namespace_import_execution() {
     let temp_dir = std::env::temp_dir().join(format!("modus_test_ns_exec_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -675,6 +677,7 @@ function main(): i32 {
 }
 
 #[test]
+#[cfg(feature = "llvm")]
 fn test_build_shared_library_and_dynamic_linking() {
     let temp_dir =
         std::env::temp_dir().join(format!("modus_test_shlib_dyn_{}", std::process::id()));
@@ -751,6 +754,7 @@ function main(): i32 {
 }
 
 #[test]
+#[cfg(feature = "llvm")]
 fn test_incremental_caching_and_early_cutoff() {
     let temp_dir = std::env::temp_dir().join(format!("modus_test_cache_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp_dir);

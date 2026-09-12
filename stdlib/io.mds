@@ -1,0 +1,122 @@
+// Standard I/O Module for Modus (std:io)
+
+export type IOError = {
+    code: i32,
+    message: String,
+};
+
+export function stdin_fileno(): i32 => 0;
+export function stdout_fileno(): i32 => 1;
+export function stderr_fileno(): i32 => 2;
+
+extern "C" {
+    function write(fd: i32, buf: Pointer(u8), count: u64): IO(i64);
+    function read(fd: i32, buf: Pointer(u8), count: u64): IO(i64);
+    function strlen(s: CString): u64;
+    function fflush(stream: Pointer(void)): IO(i32);
+    function malloc(size: u64): Pointer(u8);
+    function free(ptr: Pointer(void)): IO(void);
+}
+
+export function writeRaw(fd: i32, buf: Pointer(u8), count: u64): IO(Result(i64, IOError)) {
+    let res: i64 = perform write(fd, buf, count);
+    if (res < 0) {
+        return Result.Err({ code: -1, message: "write failed" });
+    } else {
+        return Result.Ok(res);
+    }
+}
+
+export function readRaw(fd: i32, buf: Pointer(u8), count: u64): IO(Result(i64, IOError)) {
+    let res: i64 = perform read(fd, buf, count);
+    if (res < 0) {
+        return Result.Err({ code: -1, message: "read failed" });
+    } else {
+        return Result.Ok(res);
+    }
+}
+
+export function print(s: String): IO(void) {
+    let cstr: CString = String.toCString(s);
+    let len: u64 = strlen(cstr);
+    perform write(1, cstr, len);
+    return IO.pure(());
+}
+
+export function println(s: String): IO(void) {
+    perform print(s);
+    perform print("\n");
+    return IO.pure(());
+}
+
+export function eprint(s: String): IO(void) {
+    let cstr: CString = String.toCString(s);
+    let len: u64 = strlen(cstr);
+    perform write(2, cstr, len);
+    return IO.pure(());
+}
+
+export function eprintln(s: String): IO(void) {
+    perform eprint(s);
+    perform eprint("\n");
+    return IO.pure(());
+}
+
+export function flush(): IO(void) {
+    let null_ptr: Pointer(void) = Pointer.null();
+    perform fflush(null_ptr);
+    return IO.pure(());
+}
+
+function io_read_line_loop(fd: i32, buf: Pointer(u8), cap: i32, len: i32): IO(Result(String, IOError)) {
+    if (len >= cap - 1) {
+        perform buf.offset(len).write(0);
+        let s: String = perform buf.toString();
+        return Result.Ok(s);
+    } else {
+        let n: i64 = perform read(fd, buf.offset(len), 1);
+        if (n <= 0) {
+            if (len == 0) {
+                return Result.Err({ code: -1, message: "EOF or read error" });
+            } else {
+                perform buf.offset(len).write(0);
+                let s: String = perform buf.toString();
+                return Result.Ok(s);
+            }
+        } else {
+            let byte_val: u8 = perform buf.offset(len).read();
+            if (byte_val == 10) {
+                if (len > 0) {
+                    let prev: u8 = perform buf.offset(len - 1).read();
+                    if (prev == 13) {
+                        perform buf.offset(len - 1).write(0);
+                        let s: String = perform buf.toString();
+                        return Result.Ok(s);
+                    } else {
+                        perform buf.offset(len).write(0);
+                        let s: String = perform buf.toString();
+                        return Result.Ok(s);
+                    }
+                } else {
+                    perform buf.offset(len).write(0);
+                    let s: String = perform buf.toString();
+                    return Result.Ok(s);
+                }
+            } else {
+                return io_read_line_loop(fd, buf, cap, len + 1);
+            }
+        }
+    }
+}
+
+export function readLineFrom(fd: i32): IO(Result(String, IOError)) {
+    let cap: i32 = 4096;
+    let buf: Pointer(u8) = malloc(4096);
+    if (buf.isNull()) {
+        return Result.Err({ code: -1, message: "Failed to allocate buffer" });
+    } else {
+        return io_read_line_loop(fd, buf, cap, 0);
+    }
+}
+
+export function readLine(): IO(Result(String, IOError)) => readLineFrom(0);

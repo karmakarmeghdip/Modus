@@ -25,6 +25,11 @@ pub fn sanitize_ident(s: &str) -> String {
 /// - `"libmath.so"` -> `"math"`
 /// - `"matrix_ops.mds"` -> `"matrix_ops"`
 pub fn module_ident_from_path(path: &Path) -> String {
+    if let Some(s) = path.to_str()
+        && let Some(stripped) = s.strip_prefix("std:")
+    {
+        return format!("std_{}", sanitize_ident(stripped));
+    }
     let file_stem = path
         .file_stem()
         .and_then(|s| s.to_str())

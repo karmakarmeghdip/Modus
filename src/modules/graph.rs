@@ -107,7 +107,19 @@ impl ModuleGraph {
     pub fn build(entry_path: &Path) -> Result<Self, GraphError> {
         let entry_canonical = resolve_module_path(entry_path.to_str().unwrap(), None)?;
         let entry_id = ModuleId::new(entry_canonical);
+        Self::build_internal(entry_id, None)
+    }
 
+    /// Builds and validates the complete module dependency graph starting from an entry source string.
+    pub fn build_from_source(entry_path: &Path, entry_source: &str) -> Result<Self, GraphError> {
+        let entry_id = ModuleId::new(entry_path.to_path_buf());
+        Self::build_internal(entry_id, Some(entry_source.to_string()))
+    }
+
+    fn build_internal(
+        entry_id: ModuleId,
+        entry_source: Option<String>,
+    ) -> Result<Self, GraphError> {
         let mut modules = HashMap::new();
         let mut queue = VecDeque::new();
         let mut visited = HashSet::new();
@@ -117,10 +129,18 @@ impl ModuleGraph {
 
         while let Some(current_id) = queue.pop_front() {
             let file_path = current_id.path();
-            let source = fs::read_to_string(file_path).map_err(|e| GraphError::Io {
-                path: file_path.to_path_buf(),
-                message: e.to_string(),
-            })?;
+            let source = if current_id == entry_id
+                && let Some(src) = &entry_source
+            {
+                src.clone()
+            } else if let Some(std_src) = super::stdlib::get_std_module_source(file_path) {
+                std_src.to_string()
+            } else {
+                fs::read_to_string(file_path).map_err(|e| GraphError::Io {
+                    path: file_path.to_path_buf(),
+                    message: e.to_string(),
+                })?
+            };
 
             let program = parse_program(&source).map_err(|errors| GraphError::Parse {
                 path: file_path.to_path_buf(),

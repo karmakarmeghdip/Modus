@@ -1,0 +1,28 @@
+==================
+Record Instantiation and Update
+==================
+function update_point(p: Point): Point {
+    let p2 = { ...p, x: 10 };
+    return p2;
+}
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (let_statement
+        name: (identifier)
+        value: (record_expression
+          (spread_element
+            value: (identifier))
+          (record_field
+            name: (identifier)
+            value: (integer_literal))))
+      (return_statement
+        value: (identifier)))))

@@ -1,0 +1,57 @@
+==================
+Trait Declaration
+==================
+trait Drawable(Self) {
+    function draw(self: Self): IO(void);
+}
+---
+
+(source_file
+  (trait_declaration
+    name: (identifier)
+    type_parameters: (type_parameters
+      (type_param
+        name: (identifier)))
+    (trait_member
+      name: (identifier)
+      parameters: (parameter_list
+        (parameter
+          name: (identifier)
+          type: (identifier)))
+      return_type: (generic_type
+        name: (identifier)
+        arguments: (tuple_type
+          (primitive_type))))))
+
+==================
+Impl Declaration
+==================
+impl Drawable for Circle {
+    function draw(self: Circle): IO(void) {
+        return IO.pure(());
+    }
+}
+---
+
+(source_file
+  (impl_declaration
+    trait: (identifier)
+    target: (identifier)
+    (function_declaration
+      name: (identifier)
+      parameters: (parameter_list
+        (parameter
+          name: (identifier)
+          type: (identifier)))
+      return_type: (generic_type
+        name: (identifier)
+        arguments: (tuple_type
+          (primitive_type)))
+      body: (block
+        (return_statement
+          value: (call_expression
+            function: (field_expression
+              argument: (identifier)
+              field: (identifier))
+            arguments: (argument_list
+              (unit_literal))))))))
