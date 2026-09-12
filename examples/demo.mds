@@ -1,0 +1,66 @@
+// Modus Demo Program
+// Features demonstrated:
+// 1. Structural records and immutable let bindings
+// 2. Pure tail-recursive functions (eliminated into loops via LLVM musttail)
+// 3. Pattern matching on discriminated unions
+// 4. Unboxed arithmetic and IO effects
+
+type Point = {
+    x: i32,
+    y: i32,
+};
+
+type Option(T) = Some(T) | None;
+
+// Manhattan distance on immutable record
+function manhattan_distance(p: Point): i32 {
+    return p.x + p.y;
+}
+
+// Tail-recursive sum: computes sum from 1 to n with accumulator
+function sum_tail_rec(n: i32, acc: i32): i32 {
+    if (n <= 0) {
+        return acc;
+    } else {
+        return sum_tail_rec(n - 1, acc + n);
+    }
+}
+
+// Tail-recursive factorial
+function factorial_tail_rec(n: i32, acc: i32): i32 {
+    if (n <= 1) {
+        return acc;
+    } else {
+        return factorial_tail_rec(n - 1, n * acc);
+    }
+}
+
+// Pattern matching on Option
+function unwrap_or(opt: Option(i32), fallback: i32): i32 {
+    return match (opt) {
+        Some(v) => v,
+        None => fallback,
+    };
+}
+
+function main(): IO(i32) {
+    // 1. Structural record instantiation
+    let origin: Point = { x: 12, y: 30 };
+    let dist: i32 = manhattan_distance(origin); // 42
+
+    // 2. Tail-recursive loop
+    let sum10: i32 = sum_tail_rec(10, 0); // 55
+
+    // 3. Tail-recursive factorial
+    let fact5: i32 = factorial_tail_rec(5, 1); // 120
+
+    // 4. Discriminated union and pattern matching
+    let opt_val: Option(i32) = Option.Some(83);
+    let unwrapped: i32 = unwrap_or(opt_val, 0); // 83
+
+    // 5. Aggregate result
+    // dist (42) + sum10 (55) + fact5 (120) + unwrapped (83) = 300
+    let total: i32 = dist + sum10 + fact5 + unwrapped;
+
+    return IO.pure(total);
+}

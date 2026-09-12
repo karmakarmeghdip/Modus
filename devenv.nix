@@ -4,8 +4,23 @@
   # https://devenv.sh/basics/
   # env.GREET = "devenv";
 
-  # https://devenv.sh/packages/
-  # packages = [ pkgs.git ];
+  packages = [
+    pkgs.llvmPackages_23.llvm.dev
+    pkgs.llvmPackages_23.libllvm
+    pkgs.libffi
+    pkgs.libxml2
+    pkgs.zlib
+    pkgs.ncurses
+  ];
+
+  env.LLVM_SYS_231_PREFIX = "${pkgs.llvmPackages_23.llvm.dev}";
+  env.LIBRARY_PATH = lib.makeLibraryPath [
+    pkgs.llvmPackages_23.libllvm
+    pkgs.libffi
+    pkgs.libxml2
+    pkgs.zlib
+    pkgs.ncurses
+  ];
 
   # https://devenv.sh/languages/
   languages.rust.enable = true;
