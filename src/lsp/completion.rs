@@ -1,13 +1,90 @@
-//! Context-aware completion items and code snippet provider for Modus.
-
-use super::document::Document;
+use super::diagnostics::{load_module_interface, resolve_import};
+use super::document::{Document, DocumentStore};
+use std::collections::HashSet;
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionList, CompletionResponse, InsertTextFormat,
     Position,
 };
 
-/// Computes completion items at the cursor position.
-pub fn completions_at(doc: &Document, _position: Position) -> Option<CompletionResponse> {
+/// Computes completion items at the cursor position without store.
+pub fn completions_at(doc: &Document, position: Position) -> Option<CompletionResponse> {
+    completions_with_store(doc, position, None)
+}
+
+/// Computes completion items at the cursor position, supporting import completions from other files.
+pub fn completions_with_store(
+    doc: &Document,
+    position: Position,
+    store: Option<&DocumentStore>,
+) -> Option<CompletionResponse> {
+    // 0. Check if typing inside an import clause: `import { ... } from "source"`
+    let _offset = doc.line_index.position_to_offset(position);
+    let line_start = doc.line_index.position_to_offset(Position {
+        line: position.line,
+        character: 0,
+    });
+    let line_end = doc.line_index.position_to_offset(Position {
+        line: position.line + 1,
+        character: 0,
+    });
+    let line_text = if line_start < line_end && line_end <= doc.text.len() {
+        &doc.text[line_start..line_end]
+    } else {
+        ""
+    };
+
+    if line_text.contains("import")
+        && line_text.contains("from")
+        && let Some(source_str) = extract_source_from_import_line(line_text)
+    {
+        let current_file_path = doc.uri.to_file_path().ok();
+        if let Ok(resolved) = resolve_import(&source_str, current_file_path.as_deref(), store) {
+            let mut visiting = HashSet::new();
+            if let Ok(iface) = load_module_interface(&resolved, store, &mut visiting) {
+                let mut import_items = Vec::new();
+                for (fn_name, sig) in &iface.exported_functions {
+                    import_items.push(CompletionItem {
+                        label: fn_name.clone(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        detail: Some(format!(
+                            "function {}{}: {}",
+                            fn_name,
+                            if sig.type_params.is_empty() {
+                                ""
+                            } else {
+                                "(...)"
+                            },
+                            sig.return_type
+                        )),
+                        ..Default::default()
+                    });
+                }
+                for type_name in iface.exported_types.keys() {
+                    import_items.push(CompletionItem {
+                        label: type_name.clone(),
+                        kind: Some(CompletionItemKind::CLASS),
+                        detail: Some("Exported type".to_string()),
+                        ..Default::default()
+                    });
+                }
+                for trait_name in iface.exported_traits.keys() {
+                    import_items.push(CompletionItem {
+                        label: trait_name.clone(),
+                        kind: Some(CompletionItemKind::INTERFACE),
+                        detail: Some("Exported trait".to_string()),
+                        ..Default::default()
+                    });
+                }
+                if !import_items.is_empty() {
+                    return Some(CompletionResponse::List(CompletionList {
+                        is_incomplete: false,
+                        items: import_items,
+                    }));
+                }
+            }
+        }
+    }
+
     let mut items = Vec::new();
 
     // 1. Language Keywords
@@ -143,4 +220,11 @@ pub fn completions_at(doc: &Document, _position: Position) -> Option<CompletionR
         is_incomplete: false,
         items,
     }))
+}
+
+fn extract_source_from_import_line(line: &str) -> Option<String> {
+    let first_quote = line.find('"')?;
+    let remainder = &line[first_quote + 1..];
+    let second_quote = remainder.find('"')?;
+    Some(remainder[..second_quote].to_string())
 }

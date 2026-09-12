@@ -217,8 +217,13 @@ impl<'a> DesugarContext<'a> {
                     });
                 }
                 Stmt::Expr(expr) => {
-                    let desugared_e = self.desugar_expr(expr);
-                    desugared.push(DesugaredStmt::Expr(desugared_e));
+                    if let ast::Expr::Block(inner) = &expr.node {
+                        let inner_desugared = self.desugar_stmts(inner);
+                        desugared.extend(inner_desugared);
+                    } else {
+                        let desugared_e = self.desugar_expr(expr);
+                        desugared.push(DesugaredStmt::Expr(desugared_e));
+                    }
                 }
                 Stmt::Return(ret_opt) => {
                     let desugared_ret = ret_opt.as_ref().map(|e| self.desugar_expr(e));

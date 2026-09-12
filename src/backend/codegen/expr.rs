@@ -781,7 +781,143 @@ impl<'ctx> CodeGen<'ctx> {
                 self.build_variant_constructor(tag, args)
             }
 
+            AnfExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let cond_val = self.eval_atom(cond)?;
+                let cond_int = cond_val.into_int_value();
+                let cond_i1 = if cond_int.get_type().get_bit_width() == 1 {
+                    cond_int
+                } else {
+                    self.builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            cond_int,
+                            cond_int.get_type().const_zero(),
+                            "cond_i1",
+                        )
+                        .unwrap()
+                };
+
+                let cur_fn = self.current_fn.unwrap();
+                let then_bb = self.context.append_basic_block(cur_fn, "if_expr_then");
+                let else_bb = self.context.append_basic_block(cur_fn, "if_expr_else");
+                let merge_bb = self.context.append_basic_block(cur_fn, "if_expr_merge");
+
+                let _ = self
+                    .builder
+                    .build_conditional_branch(cond_i1, then_bb, else_bb);
+
+                let llvm_ty = self.type_lowerer.llvm_type(ty);
+                let mut incoming = Vec::new();
+
+                // Compile then branch
+                self.builder.position_at_end(then_bb);
+                self.compile_block_into_merge(then_branch, merge_bb, llvm_ty, &mut incoming)?;
+
+                // Compile else branch
+                self.builder.position_at_end(else_bb);
+                self.compile_block_into_merge(else_branch, merge_bb, llvm_ty, &mut incoming)?;
+
+                self.builder.position_at_end(merge_bb);
+
+                if ty.is_void() || incoming.is_empty() {
+                    return Ok(self.context.i8_type().const_int(0, false).into());
+                }
+
+                let phi = self.builder.build_phi(llvm_ty, "if_expr_res").unwrap();
+                for (val, bb) in &incoming {
+                    phi.add_incoming(&[(val as &dyn inkwell::values::BasicValue<'ctx>, *bb)]);
+                }
+
+                Ok(phi.as_basic_value())
+            }
+
             _ => Ok(self.context.i64_type().const_int(0, false).into()),
+        }
+    }
+
+    pub(crate) fn compile_block_into_merge(
+        &mut self,
+        block: &AnfBlock,
+        merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+        target_ty: inkwell::types::BasicTypeEnum<'ctx>,
+        incoming: &mut Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)>,
+    ) -> Result<(), String> {
+        for stmt in &block.stmts {
+            self.compile_stmt(stmt)?;
+        }
+
+        match &block.tail {
+            AnfTail::Atom(a) => {
+                let v = self.eval_atom(a)?;
+                let coerced = self.coerce_to_type(v, target_ty)?;
+                let cur_bb = self.builder.get_insert_block().unwrap();
+                let _ = self.builder.build_unconditional_branch(merge_bb);
+                incoming.push((coerced, cur_bb));
+            }
+            AnfTail::Return(_) | AnfTail::TailCall { .. } => {
+                self.compile_tail(&block.tail)?;
+            }
+            AnfTail::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let cond_val = self.eval_atom(cond)?;
+                let cond_int = cond_val.into_int_value();
+                let cond_i1 = if cond_int.get_type().get_bit_width() == 1 {
+                    cond_int
+                } else {
+                    self.builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            cond_int,
+                            cond_int.get_type().const_zero(),
+                            "cond_i1",
+                        )
+                        .unwrap()
+                };
+
+                let cur_fn = self.current_fn.unwrap();
+                let inner_then = self.context.append_basic_block(cur_fn, "inner_then");
+                let inner_else = self.context.append_basic_block(cur_fn, "inner_else");
+
+                let _ = self
+                    .builder
+                    .build_conditional_branch(cond_i1, inner_then, inner_else);
+
+                self.builder.position_at_end(inner_then);
+                self.compile_block_into_merge(then_branch, merge_bb, target_ty, incoming)?;
+
+                self.builder.position_at_end(inner_else);
+                if let Some(eb) = else_branch {
+                    self.compile_block_into_merge(eb, merge_bb, target_ty, incoming)?;
+                } else {
+                    let cur_bb = self.builder.get_insert_block().unwrap();
+                    let _ = self.builder.build_unconditional_branch(merge_bb);
+                    let def_val = self.const_zero_for_type(target_ty);
+                    incoming.push((def_val, cur_bb));
+                }
+            }
+            _ => {
+                let cur_bb = self.builder.get_insert_block().unwrap();
+                let _ = self.builder.build_unconditional_branch(merge_bb);
+                let def_val = self.const_zero_for_type(target_ty);
+                incoming.push((def_val, cur_bb));
+            }
+        }
+        Ok(())
+    }
+
+    fn const_zero_for_type(&self, ty: inkwell::types::BasicTypeEnum<'ctx>) -> BasicValueEnum<'ctx> {
+        match ty {
+            inkwell::types::BasicTypeEnum::IntType(it) => it.const_zero().into(),
+            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
+            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.const_null().into(),
+            _ => self.context.i64_type().const_zero().into(),
         }
     }
     pub(crate) fn build_variant_constructor(

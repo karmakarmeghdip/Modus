@@ -504,3 +504,48 @@ fn test_codegen_ffi_puts_and_strings() {
     let res = codegen.jit_run().expect("JIT run failed");
     assert_eq!(res, modus::backend::ExecutionResult::I32(0));
 }
+
+#[test]
+fn test_codegen_if_without_else_early_return() {
+    let source = r#"
+        function sum_range(n: i32, acc: i32): i32 {
+            if (n <= 0) {
+                return acc;
+            }
+            return sum_range(n - 1, acc + n);
+        }
+
+        function main(): i32 {
+            return sum_range(10, 0);
+        }
+    "#;
+    let context = Context::create();
+    let codegen =
+        modus::compile_source(&context, source, "test_if_no_else").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(55));
+}
+
+#[test]
+fn test_codegen_let_if_expression() {
+    let source = r#"
+        function clamp_val(x: i32): i32 {
+            let res: i32 = if (x > 10) {
+                10
+            } else {
+                x
+            };
+            return res;
+        }
+
+        function main(): i32 {
+            return clamp_val(15) + clamp_val(3);
+        }
+    "#;
+    let context = Context::create();
+    let codegen = modus::compile_source(&context, source, "test_let_if").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(13));
+}

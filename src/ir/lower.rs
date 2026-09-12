@@ -160,6 +160,61 @@ impl AnfLowerCtx {
                 DesugaredStmt::Expr(expr) => {
                     if is_last {
                         return self.lower_terminal_expr(expr, anf_stmts, is_fn_level);
+                    } else if let DesugaredExprKind::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                    } = &expr.kind
+                    {
+                        let remaining = &stmts[i + 1..];
+                        let mut full_then = then_branch.clone();
+                        if !block_always_returns(then_branch) {
+                            full_then.extend_from_slice(remaining);
+                        }
+
+                        let full_else = match else_branch {
+                            Some(eb) => {
+                                let mut full_e = eb.clone();
+                                if !block_always_returns(eb) {
+                                    full_e.extend_from_slice(remaining);
+                                }
+                                Some(full_e)
+                            }
+                            None => Some(remaining.to_vec()),
+                        };
+
+                        let new_if = DesugaredExpr::new(
+                            DesugaredExprKind::If {
+                                condition: condition.clone(),
+                                then_branch: full_then,
+                                else_branch: full_else,
+                            },
+                            expr.ty.clone(),
+                            expr.span,
+                        );
+                        return self.lower_terminal_expr(&new_if, anf_stmts, is_fn_level);
+                    } else if let DesugaredExprKind::Match { expr: scrut, arms } = &expr.kind {
+                        let remaining = &stmts[i + 1..];
+                        let mut new_arms = Vec::new();
+                        for arm in arms {
+                            let mut arm_body = arm.body.clone();
+                            if !block_always_returns(&arm.body) {
+                                arm_body.extend_from_slice(remaining);
+                            }
+                            new_arms.push(DesugaredMatchArm {
+                                pattern: arm.pattern.clone(),
+                                body: arm_body,
+                            });
+                        }
+                        let new_match = DesugaredExpr::new(
+                            DesugaredExprKind::Match {
+                                expr: scrut.clone(),
+                                arms: new_arms,
+                            },
+                            expr.ty.clone(),
+                            expr.span,
+                        );
+                        return self.lower_terminal_expr(&new_match, anf_stmts, is_fn_level);
                     } else {
                         // Intermediate expression statement
                         let _ = self.lower_expr_to_atom(expr, &mut anf_stmts);
@@ -497,5 +552,32 @@ impl AnfLowerCtx {
             value: anf_expr,
             span: expr.span,
         });
+    }
+}
+
+fn block_always_returns(stmts: &[DesugaredStmt]) -> bool {
+    stmts.iter().any(stmt_always_returns)
+}
+
+fn stmt_always_returns(stmt: &DesugaredStmt) -> bool {
+    match stmt {
+        DesugaredStmt::Return(..) => true,
+        DesugaredStmt::Expr(expr) => expr_always_returns(expr),
+        DesugaredStmt::Let { .. } => false,
+    }
+}
+
+fn expr_always_returns(expr: &DesugaredExpr) -> bool {
+    match &expr.kind {
+        DesugaredExprKind::If {
+            then_branch,
+            else_branch: Some(eb),
+            ..
+        } => block_always_returns(then_branch) && block_always_returns(eb),
+        DesugaredExprKind::Match { arms, .. } => {
+            !arms.is_empty() && arms.iter().all(|arm| block_always_returns(&arm.body))
+        }
+        DesugaredExprKind::Block(stmts) => block_always_returns(stmts),
+        _ => false,
     }
 }

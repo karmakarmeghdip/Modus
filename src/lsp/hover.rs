@@ -19,10 +19,49 @@ pub fn hover_at(doc: &Document, position: Position) -> Option<Hover> {
         });
     }
 
+    // 1b. Check if hovering on a namespace import alias (e.g. `Math`)
+    if let Some(program) = &doc.program {
+        for import_decl in &program.imports {
+            if let crate::ast::ImportClause::Namespace(alias) = &import_decl.node.clause
+                && alias == &word
+            {
+                let value = format!(
+                    "```modus\nimport * as {} from \"{}\";\n```\n*Namespace module import*",
+                    alias, import_decl.node.source
+                );
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value,
+                    }),
+                    range: None,
+                });
+            }
+        }
+    }
+
     let env = doc.env.as_ref()?;
 
-    // 2. Function lookup
-    if let Some(sig) = env.lookup_function(&word) {
+    // 2. Function lookup (direct or namespace-qualified)
+    let sig_opt = if let Some(sig) = env.lookup_function(&word) {
+        Some(sig)
+    } else if let Some(program) = &doc.program {
+        let mut found = None;
+        for import_decl in &program.imports {
+            if let crate::ast::ImportClause::Namespace(alias) = &import_decl.node.clause {
+                let qualified = format!("{alias}.{word}");
+                if let Some(sig) = env.lookup_function(&qualified) {
+                    found = Some(sig);
+                    break;
+                }
+            }
+        }
+        found
+    } else {
+        None
+    };
+
+    if let Some(sig) = sig_opt {
         let params: Vec<String> = sig
             .params
             .iter()

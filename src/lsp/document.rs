@@ -1,10 +1,11 @@
 //! Document representation, line index, and thread-safe document store.
 
 use crate::ast::{Program, Span};
+use crate::modules::ModuleInterface;
 use crate::typechecker::Environment;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use tower_lsp::lsp_types::{Diagnostic, Position, Range, Url};
 
 /// Fast bidirectional mapping between 1D byte offsets and 2D LSP (line, character) positions.
@@ -82,6 +83,7 @@ pub struct Document {
     pub line_index: LineIndex,
     pub program: Option<Program>,
     pub env: Option<Environment>,
+    pub interface: Option<ModuleInterface>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -95,6 +97,7 @@ impl Document {
             line_index,
             program: None,
             env: None,
+            interface: None,
             diagnostics: Vec::new(),
         }
     }
@@ -105,31 +108,34 @@ impl Document {
         self.text = text;
         self.program = None;
         self.env = None;
+        self.interface = None;
         self.diagnostics.clear();
     }
 }
 
-/// Thread-safe map of open documents keyed by document URL.
+/// Thread-safe map of open documents keyed by document URL and module interface cache.
 #[derive(Debug, Default, Clone)]
 pub struct DocumentStore {
     documents: Arc<RwLock<HashMap<Url, Document>>>,
+    module_cache: Arc<RwLock<HashMap<PathBuf, ModuleInterface>>>,
 }
 
 impl DocumentStore {
     pub fn new() -> Self {
         Self {
             documents: Arc::new(RwLock::new(HashMap::new())),
+            module_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub async fn insert(&self, uri: Url, version: i32, text: String) -> Document {
+    pub fn insert(&self, uri: Url, version: i32, text: String) -> Document {
         let doc = Document::new(uri.clone(), version, text);
-        self.documents.write().await.insert(uri, doc.clone());
+        self.documents.write().unwrap().insert(uri, doc.clone());
         doc
     }
 
-    pub async fn update(&self, uri: &Url, version: i32, text: String) -> Option<Document> {
-        let mut docs = self.documents.write().await;
+    pub fn update(&self, uri: &Url, version: i32, text: String) -> Option<Document> {
+        let mut docs = self.documents.write().unwrap();
         if let Some(doc) = docs.get_mut(uri) {
             doc.update(version, text);
             Some(doc.clone())
@@ -140,27 +146,65 @@ impl DocumentStore {
         }
     }
 
-    pub async fn get(&self, uri: &Url) -> Option<Document> {
-        self.documents.read().await.get(uri).cloned()
+    pub fn get(&self, uri: &Url) -> Option<Document> {
+        self.documents.read().unwrap().get(uri).cloned()
     }
 
-    pub async fn remove(&self, uri: &Url) -> Option<Document> {
-        self.documents.write().await.remove(uri)
+    pub fn get_by_path(&self, path: &Path) -> Option<Document> {
+        let docs = self.documents.read().unwrap();
+        if let Ok(url) = Url::from_file_path(path)
+            && let Some(doc) = docs.get(&url)
+        {
+            return Some(doc.clone());
+        }
+        if let Ok(canon) = std::fs::canonicalize(path)
+            && let Ok(url) = Url::from_file_path(&canon)
+            && let Some(doc) = docs.get(&url)
+        {
+            return Some(doc.clone());
+        }
+        None
     }
 
-    pub async fn update_analysis(
+    pub fn get_text_by_path(&self, path: &Path) -> Option<String> {
+        self.get_by_path(path).map(|d| d.text)
+    }
+
+    pub fn remove(&self, uri: &Url) -> Option<Document> {
+        self.documents.write().unwrap().remove(uri)
+    }
+
+    pub fn update_analysis(
         &self,
         uri: &Url,
         program: Option<Program>,
         env: Option<Environment>,
+        interface: Option<ModuleInterface>,
         diagnostics: Vec<Diagnostic>,
     ) {
-        let mut docs = self.documents.write().await;
+        let mut docs = self.documents.write().unwrap();
         if let Some(doc) = docs.get_mut(uri) {
             doc.program = program;
             doc.env = env;
+            doc.interface = interface;
             doc.diagnostics = diagnostics;
         }
+    }
+
+    pub fn get_cached_interface(&self, path: &Path) -> Option<ModuleInterface> {
+        self.module_cache.read().unwrap().get(path).cloned()
+    }
+
+    pub fn cache_interface(&self, path: PathBuf, iface: ModuleInterface) {
+        self.module_cache.write().unwrap().insert(path, iface);
+    }
+
+    pub fn invalidate_cache(&self, path: &Path) {
+        self.module_cache.write().unwrap().remove(path);
+    }
+
+    pub fn get_all_open_docs(&self) -> Vec<Document> {
+        self.documents.read().unwrap().values().cloned().collect()
     }
 }
 
