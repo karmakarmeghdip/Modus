@@ -1,0 +1,20 @@
+// Trait violation: passing a type that does not implement the expected trait
+type Triangle = {
+    base: f64,
+    height: f64,
+};
+
+trait Drawable(Self) {
+    function draw(self: Self): IO(void);
+}
+
+function renderDynamic(item: Drawable): IO(void) {
+    perform item.draw();
+    return IO.pure(());
+}
+
+function test_render(): IO(void) {
+    let t: Triangle = { base: 3.0, height: 4.0 };
+    perform renderDynamic(t);
+    return IO.pure(());
+}

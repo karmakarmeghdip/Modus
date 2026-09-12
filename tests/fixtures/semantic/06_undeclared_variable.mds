@@ -1,0 +1,5 @@
+// Scope violation: use of undeclared variable
+function compute(x: i32): i32 {
+    let result: i32 = x + unknown_var;
+    return result;
+}

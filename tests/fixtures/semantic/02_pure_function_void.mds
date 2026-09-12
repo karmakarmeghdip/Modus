@@ -1,0 +1,4 @@
+// Dead computation violation: pure function returning void
+function useless_computation(x: i32): void {
+    let y: i32 = x + 1;
+}

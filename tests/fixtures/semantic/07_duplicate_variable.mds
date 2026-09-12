@@ -1,0 +1,6 @@
+// Scope violation: duplicate variable declaration in the same scope
+function duplicate_variable(): i32 {
+    let a: i32 = 10;
+    let a: i32 = 20;
+    return a;
+}

@@ -1,0 +1,9 @@
+// Purity violation: perform called inside a non-IO function
+function read_data(): IO(i32) {
+    return IO.pure(42);
+}
+
+function compute(): i32 {
+    let x: i32 = perform read_data();
+    return x;
+}

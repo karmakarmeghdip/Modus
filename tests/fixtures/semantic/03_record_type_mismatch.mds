@@ -1,0 +1,10 @@
+// Type mismatch in structural record literal
+type Point = {
+    x: i32,
+    y: i32,
+};
+
+function create_point(): Point {
+    let p: Point = { x: 1, y: "string" };
+    return p;
+}

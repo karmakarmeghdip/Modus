@@ -1,0 +1,9 @@
+// Error handling violation: check called on non-Result type
+function not_a_result(): i32 {
+    return 42;
+}
+
+function test_check(): Result(i32, String) {
+    let val: i32 = check not_a_result();
+    return Result.Ok(val);
+}
