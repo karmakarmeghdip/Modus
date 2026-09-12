@@ -32,6 +32,9 @@ impl<'ctx> TypeLowerer<'ctx> {
     /// Primitives are unboxed (native types).
     /// All heap-allocated types (String, Array, Record, Union, Closure) are `ptr`.
     pub fn llvm_type(&self, ty: &Type) -> BasicTypeEnum<'ctx> {
+        if let Some(inner) = ty.unwrap_io() {
+            return self.llvm_type(inner);
+        }
         match ty {
             Type::Primitive(prim) => match prim {
                 PrimitiveType::U8 | PrimitiveType::I8 => {
@@ -58,7 +61,7 @@ impl<'ctx> TypeLowerer<'ctx> {
                 PrimitiveType::Void => self.context.i8_type().as_basic_type_enum(),
             },
             Type::Unit => self.context.i8_type().as_basic_type_enum(),
-            // All heap objects are manipulated via pointers
+            // All heap objects and raw pointers (Pointer, CString) are manipulated via pointers
             Type::Array(_)
             | Type::Record(_)
             | Type::Tuple(_)
@@ -75,10 +78,11 @@ impl<'ctx> TypeLowerer<'ctx> {
 
     /// Maps a Modus return type to an LLVM return type (None for void).
     pub fn llvm_return_type(&self, ty: &Type) -> Option<BasicTypeEnum<'ctx>> {
-        if ty.is_void() || *ty == Type::Unit {
+        let unwrapped = ty.unwrap_io().unwrap_or(ty);
+        if unwrapped.is_void() || *unwrapped == Type::Unit {
             None
         } else {
-            Some(self.llvm_type(ty))
+            Some(self.llvm_type(unwrapped))
         }
     }
 

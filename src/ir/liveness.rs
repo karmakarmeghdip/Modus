@@ -19,10 +19,18 @@ pub fn is_heap_type(ty: &Type) -> bool {
     match ty {
         Type::Primitive(p) => matches!(p, PrimitiveType::String),
         Type::Unit => false,
+        Type::Named { name, args } => {
+            if name == "Pointer" || name == "CString" {
+                return false;
+            }
+            if name == "IO" {
+                return args.first().map(is_heap_type).unwrap_or(false);
+            }
+            true
+        }
         Type::Array(_)
         | Type::Record(_)
         | Type::Tuple(_)
-        | Type::Named { .. }
         | Type::Function { .. }
         | Type::TraitObject(_) => true,
         // Conservatively treat type variables and generic bounds as potential heap objects

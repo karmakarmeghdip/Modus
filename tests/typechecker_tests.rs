@@ -488,3 +488,125 @@ fn test_trait_method_signature_mismatch_in_impl() {
         err
     );
 }
+
+#[test]
+fn test_ffi_effectful_extern_in_pure_rejected() {
+    let source = r#"
+extern "C" {
+    function puts(s: CString): IO(i32);
+}
+
+function impure_caller(): i32 {
+    let s: CString = String.toCString("test");
+    return puts(s);
+}
+"#;
+    let program = parse_program(source).expect("Parsing must succeed");
+    let result = check_program(&program);
+    assert!(
+        result.is_err(),
+        "Calling effectful extern function in pure function must fail"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err.kind, TypeErrorKind::PurityViolation { .. }),
+        "Expected PurityViolation, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_ffi_perform_on_pure_extern_rejected() {
+    let source = r#"
+extern "C" {
+    function strlen(s: CString): u64;
+}
+
+function test(): IO(u64) {
+    let s: CString = String.toCString("test");
+    let len: u64 = perform strlen(s);
+    return IO.pure(len);
+}
+"#;
+    let program = parse_program(source).expect("Parsing must succeed");
+    let result = check_program(&program);
+    assert!(
+        result.is_err(),
+        "Calling perform on pure extern function must fail"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err.kind, TypeErrorKind::PerformOnNonIO { .. }),
+        "Expected PerformOnNonIO, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_ffi_pure_extern_in_pure_allowed() {
+    let source = r#"
+extern "C" {
+    function strlen(s: CString): u64;
+}
+
+function pure_len(): u64 {
+    let s: CString = String.toCString("hello");
+    return strlen(s);
+}
+"#;
+    let program = parse_program(source).expect("Parsing must succeed");
+    let result = check_program(&program);
+    assert!(
+        result.is_ok(),
+        "Pure extern function in pure function must typecheck: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_pointer_operations_typecheck() {
+    let source = r#"
+extern "C" {
+    function malloc(size: u64): IO(Pointer(void));
+    function free(ptr: Pointer(void)): IO(void);
+}
+
+function test_ptrs(): IO(i32) {
+    let raw: Pointer(void) = perform malloc(8);
+    let p: Pointer(i32) = raw.cast();
+    perform p.write(42);
+    let p_next: Pointer(i32) = p.offset(1);
+    perform p_next.write(100);
+    let val: i32 = perform p.read();
+    let addr: u64 = p.address();
+    let is_null: bool = p.isNull();
+    let null_ptr: Pointer(i32) = Pointer.null();
+    perform free(p.cast());
+    return IO.pure(val);
+}
+"#;
+    let program = parse_program(source).expect("Parsing must succeed");
+    let result = check_program(&program);
+    assert!(
+        result.is_ok(),
+        "Pointer operations must typecheck cleanly: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_extern_with_body_rejected() {
+    let source = r#"
+extern "C" {
+    function puts(s: CString): IO(i32) {
+        return IO.pure(0);
+    }
+}
+"#;
+    let program = parse_program(source).expect("Parsing must succeed");
+    let result = check_program(&program);
+    assert!(
+        result.is_err(),
+        "Extern function with body must be rejected"
+    );
+}

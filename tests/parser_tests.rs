@@ -780,3 +780,51 @@ fn test_structural_record_literal() {
         }
     }
 }
+
+#[test]
+fn test_parse_extern_block() {
+    let src = r#"
+extern "C" {
+    function puts(s: CString): IO(i32);
+    function open(path: CString, flags: i32, mode: u32): IO(i32);
+    function strlen(s: CString): u64;
+}
+"#;
+    let res = parse_program(src);
+    assert!(res.is_ok(), "Extern block should parse: {:?}", res.err());
+    let prog = res.unwrap();
+    assert_eq!(prog.declarations.len(), 1);
+    match &prog.declarations[0].node {
+        Declaration::Extern(ext) => {
+            assert_eq!(ext.abi.as_deref(), Some("C"));
+            assert_eq!(ext.functions.len(), 3);
+            assert_eq!(ext.functions[0].node.name, "puts");
+            assert_eq!(ext.functions[1].node.name, "open");
+            assert_eq!(ext.functions[2].node.name, "strlen");
+        }
+        _ => panic!("Expected Declaration::Extern"),
+    }
+}
+
+#[test]
+fn test_parse_extern_single_function() {
+    let src = r#"
+extern "libc.so.6" function malloc(size: u64): IO(Pointer(void));
+"#;
+    let res = parse_program(src);
+    assert!(
+        res.is_ok(),
+        "Single extern function should parse: {:?}",
+        res.err()
+    );
+    let prog = res.unwrap();
+    assert_eq!(prog.declarations.len(), 1);
+    match &prog.declarations[0].node {
+        Declaration::Extern(ext) => {
+            assert_eq!(ext.abi.as_deref(), Some("libc.so.6"));
+            assert_eq!(ext.functions.len(), 1);
+            assert_eq!(ext.functions[0].node.name, "malloc");
+        }
+        _ => panic!("Expected Declaration::Extern"),
+    }
+}

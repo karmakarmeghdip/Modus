@@ -97,6 +97,35 @@ impl Type {
         }
     }
 
+    pub fn pointer(inner: Type) -> Self {
+        Type::Named {
+            name: "Pointer".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, Type::Named { name, args } if name == "Pointer" && args.len() == 1)
+    }
+
+    pub fn unwrap_pointer(&self) -> Option<&Type> {
+        match self {
+            Type::Named { name, args } if name == "Pointer" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    pub fn cstring() -> Self {
+        Type::Named {
+            name: "CString".to_string(),
+            args: vec![],
+        }
+    }
+
+    pub fn is_cstring(&self) -> bool {
+        matches!(self, Type::Named { name, .. } if name == "CString")
+    }
+
     pub fn is_void(&self) -> bool {
         matches!(self, Type::Primitive(PrimitiveType::Void) | Type::Unit)
     }

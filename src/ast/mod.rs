@@ -81,11 +81,18 @@ pub enum ExportDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ExternBlock {
+    pub abi: Option<String>,
+    pub functions: Vec<Spanned<FunctionDecl>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Declaration {
     Function(FunctionDecl),
     Type(TypeDecl),
     Trait(TraitDecl),
     Impl(ImplDecl),
+    Extern(ExternBlock),
 }
 
 impl Declaration {
@@ -95,6 +102,7 @@ impl Declaration {
             Declaration::Type(t) => t.is_exported,
             Declaration::Trait(tr) => tr.is_exported,
             Declaration::Impl(_) => false,
+            Declaration::Extern(ext) => ext.functions.iter().any(|f| f.node.is_exported),
         }
     }
 }

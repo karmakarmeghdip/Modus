@@ -70,6 +70,15 @@ impl ModuleInterface {
                         }
                     }
                     Declaration::Impl(_) => {}
+                    Declaration::Extern(ext) => {
+                        for f in &ext.functions {
+                            if f.node.is_exported
+                                && let Some(sig) = env.lookup_function(&f.node.name)
+                            {
+                                exported_functions.insert(f.node.name.clone(), sig.clone());
+                            }
+                        }
+                    }
                 }
             }
         }

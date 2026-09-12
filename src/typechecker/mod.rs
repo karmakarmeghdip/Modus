@@ -26,24 +26,40 @@ pub fn check_program_with_env(program: &Program, env: &mut Environment) -> Resul
     // Pass 0: Verify function body presence / absence invariant
     let is_header = program.library.is_some();
     for decl in &program.declarations {
-        if let Declaration::Function(func_decl) = &decl.node {
-            if is_header {
-                if func_decl.body.is_some() {
+        match &decl.node {
+            Declaration::Function(func_decl) => {
+                if is_header {
+                    if func_decl.body.is_some() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::UnexpectedFunctionBodyInHeader {
+                                function_name: func_decl.name.clone(),
+                            },
+                            Some(decl.span),
+                        ));
+                    }
+                } else if func_decl.body.is_none() {
                     return Err(TypeError::new(
-                        TypeErrorKind::UnexpectedFunctionBodyInHeader {
+                        TypeErrorKind::MissingFunctionBody {
                             function_name: func_decl.name.clone(),
                         },
                         Some(decl.span),
                     ));
                 }
-            } else if func_decl.body.is_none() {
-                return Err(TypeError::new(
-                    TypeErrorKind::MissingFunctionBody {
-                        function_name: func_decl.name.clone(),
-                    },
-                    Some(decl.span),
-                ));
             }
+            Declaration::Extern(ext) => {
+                for f in &ext.functions {
+                    if f.node.body.is_some() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::General(format!(
+                                "Extern function '{}' cannot have an implementation body. Remove the body and terminate the signature with ';'",
+                                f.node.name
+                            )),
+                            Some(f.span),
+                        ));
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -70,8 +86,16 @@ pub fn check_program_with_env(program: &Program, env: &mut Environment) -> Resul
 
     // Pass 4: Register all function signatures and verify purity/dead-computation rules
     for decl in &program.declarations {
-        if let Declaration::Function(func_decl) = &decl.node {
-            register_function_sig(env, func_decl, decl.span)?;
+        match &decl.node {
+            Declaration::Function(func_decl) => {
+                register_function_sig(env, func_decl, decl.span)?;
+            }
+            Declaration::Extern(ext) => {
+                for f in &ext.functions {
+                    register_extern_sig(env, &f.node, f.span)?;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -328,6 +352,55 @@ fn register_function_sig(
         is_effectful,
         span,
         symbol_name: None,
+    };
+
+    env.define_function(sig)?;
+    Ok(())
+}
+
+fn register_extern_sig(
+    env: &mut Environment,
+    func_decl: &FunctionDecl,
+    span: crate::ast::Span,
+) -> Result<(), TypeError> {
+    let generic_names: Vec<String> = func_decl
+        .type_params
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+
+    let mut params = Vec::new();
+    for p in &func_decl.params {
+        let p_ty = env.resolve_ast_type(&p.ty.node, &generic_names, Some(p.ty.span))?;
+        params.push((p.name.clone(), p_ty));
+    }
+
+    let return_type = if let Some(ret) = &func_decl.return_type {
+        env.resolve_ast_type(&ret.node, &generic_names, Some(ret.span))?
+    } else {
+        Type::void()
+    };
+
+    let is_effectful = return_type.is_io();
+
+    // Check purity & dead computation rule for pure function returning void
+    if !is_effectful && return_type.is_void() {
+        return Err(TypeError::new(
+            TypeErrorKind::DeadComputation {
+                function_name: func_decl.name.clone(),
+            },
+            Some(span),
+        ));
+    }
+
+    let sig = FunctionSig {
+        name: func_decl.name.clone(),
+        type_params: func_decl.type_params.clone(),
+        params,
+        return_type,
+        is_effectful,
+        span,
+        symbol_name: Some(func_decl.name.clone()),
     };
 
     env.define_function(sig)?;

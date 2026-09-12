@@ -23,6 +23,7 @@ pub enum Token {
     From,
     As,
     Library,
+    Extern,
 
     // Forbidden keywords (recognized to reject with explicit diagnostics)
     Fn,
@@ -93,6 +94,7 @@ impl fmt::Display for Token {
             Token::From => write!(f, "'from'"),
             Token::As => write!(f, "'as'"),
             Token::Library => write!(f, "'library'"),
+            Token::Extern => write!(f, "'extern'"),
             Token::Fn => write!(f, "'fn'"),
             Token::Mut => write!(f, "'mut'"),
             Token::While => write!(f, "'while'"),

@@ -135,6 +135,159 @@ impl<'ctx> CodeGen<'ctx> {
                     return self.build_variant_constructor(tag, args);
                 }
 
+                // Pointer built-ins: Pointer.null, Pointer.fromAddress
+                if let Atom::Var(r) = receiver
+                    && r == "Pointer"
+                {
+                    if method == "null" {
+                        return Ok(self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null()
+                            .into());
+                    }
+                    if method == "fromAddress" && !args.is_empty() {
+                        let addr_val = self.eval_atom(&args[0])?;
+                        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                        let ptr_val = self
+                            .builder
+                            .build_int_to_ptr(addr_val.into_int_value(), ptr_ty, "from_addr")
+                            .unwrap();
+                        return Ok(ptr_val.into());
+                    }
+                }
+
+                // String.toCString / CString.toString built-ins
+                if let Atom::Var(r) = receiver
+                    && ((r == "String" && method == "toCString")
+                        || (r == "CString" && method == "toString"))
+                    && let Some(first_arg) = args.first()
+                {
+                    return self.eval_atom(first_arg);
+                }
+
+                // Pointer instance methods: read, write, offset, address, isNull, cast, toString
+                if method == "read" && args.is_empty() {
+                    let recv_val = self.eval_atom(receiver)?;
+                    if recv_val.is_pointer_value() {
+                        let ptr = recv_val.into_pointer_value();
+                        let load_ty = self.type_lowerer.llvm_type(ty);
+                        let loaded = self.builder.build_load(load_ty, ptr, "ptr_read").unwrap();
+                        return Ok(loaded);
+                    }
+                }
+
+                if method == "write" && args.len() == 1 {
+                    let recv_val = self.eval_atom(receiver)?;
+                    if recv_val.is_pointer_value() {
+                        let ptr = recv_val.into_pointer_value();
+                        let val_to_write = self.eval_atom(&args[0])?;
+                        let _ = self.builder.build_store(ptr, val_to_write);
+                        return Ok(self.context.i8_type().const_int(0, false).into());
+                    }
+                }
+
+                if method == "offset" && args.len() == 1 {
+                    let recv_val = self.eval_atom(receiver)?;
+                    if recv_val.is_pointer_value() {
+                        let ptr = recv_val.into_pointer_value();
+                        let count_val = self.eval_atom(&args[0])?.into_int_value();
+                        let i64_type = self.context.i64_type();
+                        let count_i64 = if count_val.get_type().get_bit_width() < 64 {
+                            self.builder
+                                .build_int_s_extend(count_val, i64_type, "ext_count")
+                                .unwrap()
+                        } else {
+                            count_val
+                        };
+                        let ptr_int = self
+                            .builder
+                            .build_ptr_to_int(ptr, i64_type, "ptr_int")
+                            .unwrap();
+                        let elem_size_bytes: u64 = match ty.unwrap_pointer() {
+                            Some(t) => match t {
+                                Type::Primitive(p) => match p {
+                                    crate::ast::PrimitiveType::U8
+                                    | crate::ast::PrimitiveType::I8
+                                    | crate::ast::PrimitiveType::Bool => 1,
+                                    crate::ast::PrimitiveType::U16
+                                    | crate::ast::PrimitiveType::I16 => 2,
+                                    crate::ast::PrimitiveType::U32
+                                    | crate::ast::PrimitiveType::I32
+                                    | crate::ast::PrimitiveType::F32 => 4,
+                                    crate::ast::PrimitiveType::U64
+                                    | crate::ast::PrimitiveType::I64
+                                    | crate::ast::PrimitiveType::F64 => 8,
+                                    crate::ast::PrimitiveType::String
+                                    | crate::ast::PrimitiveType::Void => 8,
+                                },
+                                _ => 8,
+                            },
+                            None => 1,
+                        };
+                        let elem_size = i64_type.const_int(elem_size_bytes, false);
+                        let byte_offset = self
+                            .builder
+                            .build_int_mul(count_i64, elem_size, "byte_off")
+                            .unwrap();
+                        let new_addr = self
+                            .builder
+                            .build_int_add(ptr_int, byte_offset, "new_addr")
+                            .unwrap();
+                        let new_ptr = self
+                            .builder
+                            .build_int_to_ptr(
+                                new_addr,
+                                self.context.ptr_type(AddressSpace::default()),
+                                "off_ptr",
+                            )
+                            .unwrap();
+                        return Ok(new_ptr.into());
+                    }
+                }
+
+                if method == "address" && args.is_empty() {
+                    let recv_val = self.eval_atom(receiver)?;
+                    if recv_val.is_pointer_value() {
+                        let ptr = recv_val.into_pointer_value();
+                        let i64_type = self.context.i64_type();
+                        let ptr_int = self
+                            .builder
+                            .build_ptr_to_int(ptr, i64_type, "ptr_addr")
+                            .unwrap();
+                        return Ok(ptr_int.into());
+                    }
+                }
+
+                if method == "isNull" && args.is_empty() {
+                    let recv_val = self.eval_atom(receiver)?;
+                    if recv_val.is_pointer_value() {
+                        let ptr = recv_val.into_pointer_value();
+                        let i64_type = self.context.i64_type();
+                        let ptr_int = self
+                            .builder
+                            .build_ptr_to_int(ptr, i64_type, "ptr_val")
+                            .unwrap();
+                        let is_null = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                ptr_int,
+                                i64_type.const_int(0, false),
+                                "is_null",
+                            )
+                            .unwrap();
+                        return Ok(is_null.into());
+                    }
+                }
+
+                if (method == "cast" || method == "toString") && args.is_empty() {
+                    let recv_val = self.eval_atom(receiver)?;
+                    if recv_val.is_pointer_value() {
+                        return Ok(recv_val);
+                    }
+                }
+
                 // Standard method call: lookup or declare method function
                 let fn_val = match self.functions.get(method).copied() {
                     Some(f) => f,

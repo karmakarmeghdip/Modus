@@ -27,6 +27,7 @@ pub fn desugar_program(program: &Program, env: &Environment) -> DesugaredProgram
             ast::Declaration::Impl(im) => {
                 declarations.push(DesugaredDecl::Impl(ctx.desugar_impl(im, decl.span)));
             }
+            ast::Declaration::Extern(_) => {}
         }
     }
 

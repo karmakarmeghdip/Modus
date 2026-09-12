@@ -126,8 +126,94 @@ impl<'a> TypeInferrer<'a> {
                 method,
                 args,
             } => {
-                // Check if receiver is a type or namespace name (e.g. IO.pure, Result.Ok, Option.Some, Math.add)
+                // Check if receiver is a type or namespace name (e.g. IO.pure, Result.Ok, Option.Some, Math.add, Pointer.null)
                 if let Expr::Ident(type_name) = &receiver.node {
+                    if type_name == "Pointer" {
+                        match method.as_str() {
+                            "null" => {
+                                if !args.is_empty() {
+                                    return Err(TypeError::new(
+                                        TypeErrorKind::ArgCountMismatch {
+                                            expected: 0,
+                                            found: args.len(),
+                                        },
+                                        Some(expr.span),
+                                    ));
+                                }
+                                return Ok(Type::pointer(self.var_gen.fresh()));
+                            }
+                            "fromAddress" => {
+                                if args.len() != 1 {
+                                    return Err(TypeError::new(
+                                        TypeErrorKind::ArgCountMismatch {
+                                            expected: 1,
+                                            found: args.len(),
+                                        },
+                                        Some(expr.span),
+                                    ));
+                                }
+                                let addr_ty = self.synth_expr(&args[0])?;
+                                if !self.subst.apply(&addr_ty).is_integer() {
+                                    return Err(TypeError::new(
+                                        TypeErrorKind::TypeMismatch {
+                                            expected: "integer".to_string(),
+                                            found: addr_ty.to_string(),
+                                        },
+                                        Some(args[0].span),
+                                    ));
+                                }
+                                return Ok(Type::pointer(self.var_gen.fresh()));
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if type_name == "String" && method == "toCString" {
+                        if args.len() != 1 {
+                            return Err(TypeError::new(
+                                TypeErrorKind::ArgCountMismatch {
+                                    expected: 1,
+                                    found: args.len(),
+                                },
+                                Some(expr.span),
+                            ));
+                        }
+                        self.check_expr(&args[0], &Type::string())?;
+                        return Ok(Type::cstring());
+                    }
+
+                    if type_name == "CString" && method == "toString" {
+                        if args.len() != 1 {
+                            return Err(TypeError::new(
+                                TypeErrorKind::ArgCountMismatch {
+                                    expected: 1,
+                                    found: args.len(),
+                                },
+                                Some(expr.span),
+                            ));
+                        }
+                        let arg_ty = self.synth_expr(&args[0])?;
+                        let applied = self.subst.apply(&arg_ty);
+                        let expanded = self.expand_type(&applied);
+                        if !expanded.is_cstring() && expanded.unwrap_pointer() != Some(&Type::u8())
+                        {
+                            return Err(TypeError::new(
+                                TypeErrorKind::TypeMismatch {
+                                    expected: "CString".to_string(),
+                                    found: arg_ty.to_string(),
+                                },
+                                Some(args[0].span),
+                            ));
+                        }
+                        let ret = Type::io(Type::string());
+                        if let Some(ctx) = &self.effect_ctx
+                            && !ctx.is_io
+                        {
+                            ctx.verify_call_allowed("CString.toString", &ret, Some(expr.span))?;
+                        }
+                        return Ok(ret);
+                    }
+
                     let qualified = format!("{type_name}.{method}");
                     if let Some(ctor) = self.env.constructors.get(&qualified).cloned() {
                         let ctor_ty = self.instantiate_constructor(&ctor);
@@ -175,6 +261,128 @@ impl<'a> TypeInferrer<'a> {
                 }
 
                 let receiver_ty = self.synth_expr(receiver)?;
+                let applied_ty = self.subst.apply(&receiver_ty);
+                let expanded_recv = self.expand_type(&applied_ty);
+
+                if let Some(inner) = expanded_recv.unwrap_pointer() {
+                    let inner = inner.clone();
+                    match method.as_str() {
+                        "read" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            let ret = Type::io(inner);
+                            if let Some(ctx) = &self.effect_ctx
+                                && !ctx.is_io
+                            {
+                                ctx.verify_call_allowed("read", &ret, Some(expr.span))?;
+                            }
+                            return Ok(ret);
+                        }
+                        "write" => {
+                            if args.len() != 1 {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 1,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            self.check_expr(&args[0], &inner)?;
+                            let ret = Type::io(Type::void());
+                            if let Some(ctx) = &self.effect_ctx
+                                && !ctx.is_io
+                            {
+                                ctx.verify_call_allowed("write", &ret, Some(expr.span))?;
+                            }
+                            return Ok(ret);
+                        }
+                        "offset" => {
+                            if args.len() != 1 {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 1,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            let count_ty = self.synth_expr(&args[0])?;
+                            if !self.subst.apply(&count_ty).is_integer() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::TypeMismatch {
+                                        expected: "integer".to_string(),
+                                        found: count_ty.to_string(),
+                                    },
+                                    Some(args[0].span),
+                                ));
+                            }
+                            return Ok(applied_ty);
+                        }
+                        "address" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(Type::u64());
+                        }
+                        "isNull" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(Type::bool());
+                        }
+                        "cast" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(Type::pointer(self.var_gen.fresh()));
+                        }
+                        "toString" if inner == Type::u8() || expanded_recv.is_cstring() => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            let ret = Type::io(Type::string());
+                            if let Some(ctx) = &self.effect_ctx
+                                && !ctx.is_io
+                            {
+                                ctx.verify_call_allowed("toString", &ret, Some(expr.span))?;
+                            }
+                            return Ok(ret);
+                        }
+                        _ => {}
+                    }
+                }
                 let resolver = TraitResolver::new(self.env);
                 let method_sig = resolver.resolve_method(
                     &receiver_ty,

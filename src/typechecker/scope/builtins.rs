@@ -43,6 +43,28 @@ impl Environment {
             },
         );
 
+        // Register built-in Pointer(T) type
+        self.types.insert(
+            "Pointer".to_string(),
+            TypeDefInfo::Builtin {
+                name: "Pointer".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "T".to_string(),
+                    bound: None,
+                }],
+            },
+        );
+
+        // Register built-in CString type alias: Pointer(u8)
+        self.types.insert(
+            "CString".to_string(),
+            TypeDefInfo::Alias {
+                name: "CString".to_string(),
+                type_params: vec![],
+                expanded_type: Type::pointer(Type::u8()),
+            },
+        );
+
         // Register IO.pure constructor: (T) => IO(T)
         self.constructors.insert(
             "IO.pure".to_string(),

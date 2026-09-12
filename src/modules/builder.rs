@@ -179,6 +179,7 @@ pub fn emit_export_map_header(library_rel_path: &str, program: &Program) -> Stri
                     out.push_str("}\n");
                 }
                 ast::Declaration::Impl(_) => {}
+                ast::Declaration::Extern(_) => {}
             }
         }
     }

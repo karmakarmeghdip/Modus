@@ -112,6 +112,7 @@ pub fn lexer<'src>()
             "from" => Token::From,
             "as" => Token::As,
             "library" => Token::Library,
+            "extern" => Token::Extern,
 
             // Forbidden keywords (recognized to reject with explicit diagnostics)
             "fn" => Token::Fn,

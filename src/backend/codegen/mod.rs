@@ -100,12 +100,16 @@ impl<'ctx> CodeGen<'ctx> {
 
     /// Declares an imported external function signature in the LLVM module.
     pub(crate) fn declare_external_function(&mut self, ext: &AnfExternFunction) {
-        let fn_type = self
-            .type_lowerer
-            .function_type(&ext.param_types, &ext.return_type);
-        let fn_val = self.module.add_function(&ext.symbol_name, fn_type, None);
-        // Standard C calling convention (ccc = 0) for dynamic linking / shared library ABI
-        fn_val.set_call_conventions(0);
+        let fn_val = if let Some(existing) = self.module.get_function(&ext.symbol_name) {
+            existing
+        } else {
+            let fn_type = self
+                .type_lowerer
+                .function_type(&ext.param_types, &ext.return_type);
+            let f = self.module.add_function(&ext.symbol_name, fn_type, None);
+            f.set_call_conventions(0);
+            f
+        };
         self.functions.insert(ext.symbol_name.clone(), fn_val);
         self.functions.insert(ext.name.clone(), fn_val);
         self.fn_ret_types

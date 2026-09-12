@@ -228,7 +228,32 @@ where
             )
         });
 
-    choice((function_decl, type_decl, trait_decl, impl_decl))
+    // 5. Extern declaration
+    let str_val = select! { Token::Str(s) => s };
+    let fn_list = function_decl_internal()
+        .repeated()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace));
+    let single_fn = function_decl_internal().map(|f| vec![f]);
+
+    let extern_decl = just(Token::Export)
+        .or_not()
+        .then_ignore(just(Token::Extern))
+        .then(str_val.or_not())
+        .then(choice((fn_list, single_fn)))
+        .map_with(|((export_tok, abi), mut functions), extra| {
+            if export_tok.is_some() {
+                for f in &mut functions {
+                    f.node.is_exported = true;
+                }
+            }
+            Spanned::new(
+                Declaration::Extern(ExternBlock { abi, functions }),
+                to_ast_span(extra.span()),
+            )
+        });
+
+    choice((function_decl, type_decl, trait_decl, impl_decl, extern_decl))
 }
 
 pub fn library_parser<'src, I>()

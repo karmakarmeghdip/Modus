@@ -430,3 +430,75 @@ fn test_codegen_compile_to_binary_and_execute() {
     let _ = fs::remove_file(&out_bin);
     assert_eq!(output.status.code(), Some(42));
 }
+
+#[test]
+fn test_codegen_ffi_malloc_free_and_pointer_memory() {
+    let source = r#"
+        extern "C" {
+            function malloc(size: u64): IO(Pointer(void));
+            function free(ptr: Pointer(void)): IO(void);
+        }
+
+        function main(): IO(i32) {
+            let raw: Pointer(void) = perform malloc(4);
+            let p: Pointer(i32) = raw.cast();
+            perform p.write(1337);
+            let val: i32 = perform p.read();
+            perform free(p.cast());
+            return IO.pure(val);
+        }
+    "#;
+    let context = Context::create();
+    let codegen = modus::compile_source(&context, source, "test_ffi_mem").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(1337));
+}
+
+#[test]
+fn test_codegen_ffi_pointer_offset_arithmetic() {
+    let source = r#"
+        extern "C" {
+            function malloc(size: u64): IO(Pointer(void));
+            function free(ptr: Pointer(void)): IO(void);
+        }
+
+        function main(): IO(i32) {
+            let raw: Pointer(void) = perform malloc(8);
+            let p: Pointer(i32) = raw.cast();
+            perform p.write(111);
+            let p1: Pointer(i32) = p.offset(1);
+            perform p1.write(222);
+            let v0: i32 = perform p.read();
+            let v1: i32 = perform p1.read();
+            perform free(p.cast());
+            return IO.pure(v0 + v1);
+        }
+    "#;
+    let context = Context::create();
+    let codegen =
+        modus::compile_source(&context, source, "test_ffi_offset").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(333));
+}
+
+#[test]
+fn test_codegen_ffi_puts_and_strings() {
+    let source = r#"
+        extern "C" {
+            function puts(s: CString): IO(i32);
+        }
+
+        function main(): IO(i32) {
+            let s: CString = String.toCString("Hello from Modus FFI!");
+            let r: i32 = perform puts(s);
+            return IO.pure(0);
+        }
+    "#;
+    let context = Context::create();
+    let codegen = modus::compile_source(&context, source, "test_ffi_puts").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(0));
+}
