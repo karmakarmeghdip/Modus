@@ -3,7 +3,7 @@
 use crate::ast::{self, PrimitiveType, Span};
 use crate::typechecker::scope::Environment;
 use crate::typechecker::scope::defs::{
-    ConstructorInfo, FunctionSig, TraitDef, TypeDefInfo, VariantInfo,
+    ConstructorInfo, FunctionSig, ImplDef, TraitDef, TypeDefInfo, VariantInfo,
 };
 use crate::typechecker::types::Type;
 use std::collections::HashMap;
@@ -140,6 +140,82 @@ impl Environment {
                 }],
             },
         );
+
+        // Register built-in Show trait:
+        // trait Show(Self) { function show(self: Self): String; }
+        let mut show_methods = HashMap::new();
+        show_methods.insert(
+            "show".to_string(),
+            FunctionSig {
+                name: "show".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+                params: vec![("self".to_string(), Type::GenericParam("Self".to_string()))],
+                return_type: Type::string(),
+                is_effectful: false,
+                span: Span::default(),
+                symbol_name: None,
+            },
+        );
+        self.traits.insert(
+            "Show".to_string(),
+            TraitDef {
+                name: "Show".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+                methods: show_methods,
+            },
+        );
+        self.types.insert(
+            "Show".to_string(),
+            TypeDefInfo::Builtin {
+                name: "Show".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+            },
+        );
+
+        // Register built-in Show implementations for all primitive types
+        let show_primitives = [
+            Type::i8(),
+            Type::i16(),
+            Type::i32(),
+            Type::i64(),
+            Type::u8(),
+            Type::u16(),
+            Type::u32(),
+            Type::u64(),
+            Type::f32(),
+            Type::f64(),
+            Type::bool(),
+            Type::string(),
+        ];
+        for target_type in show_primitives {
+            let mut methods = HashMap::new();
+            methods.insert(
+                "show".to_string(),
+                FunctionSig {
+                    name: "show".to_string(),
+                    type_params: vec![],
+                    params: vec![("self".to_string(), target_type.clone())],
+                    return_type: Type::string(),
+                    is_effectful: false,
+                    span: Span::default(),
+                    symbol_name: None,
+                },
+            );
+            self.register_impl(ImplDef {
+                trait_name: "Show".to_string(),
+                target_type,
+                methods,
+            });
+        }
     }
 
     pub(crate) fn register_option_builtin(&mut self) {

@@ -39,6 +39,7 @@ pub enum Token {
     Int(i64),
     Float(f64),
     Str(String),
+    TemplateStr(String),
 
     // Multi-character Symbols & Operators
     Arrow,  // =>
@@ -106,6 +107,7 @@ impl fmt::Display for Token {
             Token::Int(i) => write!(f, "integer '{}'", i),
             Token::Float(fl) => write!(f, "float '{}'", fl),
             Token::Str(s) => write!(f, "string \"{}\"", s),
+            Token::TemplateStr(s) => write!(f, "template string `{}`", s),
             Token::Arrow => write!(f, "'=>'"),
             Token::Spread => write!(f, "'...'"),
             Token::EqEq => write!(f, "'=='"),

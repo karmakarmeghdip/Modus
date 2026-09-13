@@ -51,6 +51,30 @@ pub fn lexer<'src>()
         .then_ignore(just('"'))
         .map(Token::Str);
 
+    // Template string literals: `Hello, ${name}!`
+    let template_escape = choice((
+        just("\\`").to("`"),
+        just("\\\\").to("\\\\"),
+        just("\\${").to("\\${"),
+        just("\\n").to("\n"),
+        just("\\r").to("\r"),
+        just("\\t").to("\t"),
+    ));
+
+    let template_content = choice((
+        template_escape,
+        none_of("`\\").to_slice(),
+        just('\\').to_slice(),
+    ))
+    .repeated()
+    .collect::<Vec<_>>()
+    .map(|parts| parts.concat());
+
+    let template_str = just('`')
+        .ignore_then(template_content)
+        .then_ignore(just('`'))
+        .map(Token::TemplateStr);
+
     // Multi-character symbols
     let multi_sym = choice((
         just("=>").to(Token::Arrow),
@@ -126,7 +150,7 @@ pub fn lexer<'src>()
             _ => Token::Ident(s.to_string()),
         });
 
-    let single_token = choice((number, string, multi_sym, single_sym, ident));
+    let single_token = choice((number, string, template_str, multi_sym, single_sym, ident));
 
     single_token
         .map_with(|tok, extra| {

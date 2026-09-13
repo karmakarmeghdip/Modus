@@ -6,7 +6,7 @@ use crate::ir::node::*;
 use crate::typechecker::Type;
 use inkwell::AddressSpace;
 use inkwell::types::{BasicMetadataTypeEnum, BasicType};
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
+use inkwell::values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum};
 use std::collections::BTreeMap;
 
 impl<'ctx> CodeGen<'ctx> {
@@ -285,6 +285,141 @@ impl<'ctx> CodeGen<'ctx> {
                     let recv_val = self.eval_atom(receiver)?;
                     if recv_val.is_pointer_value() {
                         return Ok(recv_val);
+                    }
+                }
+
+                // Built-in Show.show for primitives
+                if method == "show" && args.is_empty() {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let recv_val = self.eval_atom(receiver)?;
+
+                    // Bool -> "true" | "false"
+                    let is_bool = recv_ty.as_ref().map(|t| t.is_bool()).unwrap_or(false)
+                        || (recv_val.is_int_value()
+                            && recv_val.into_int_value().get_type().get_bit_width() == 1);
+                    if is_bool {
+                        let bool_val = if recv_val.into_int_value().get_type().get_bit_width() == 1
+                        {
+                            recv_val.into_int_value()
+                        } else {
+                            self.builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::NE,
+                                    recv_val.into_int_value(),
+                                    recv_val.into_int_value().get_type().const_int(0, false),
+                                    "to_bool",
+                                )
+                                .unwrap()
+                        };
+                        let true_str = self
+                            .builder
+                            .build_global_string_ptr("true", "str_true")
+                            .unwrap();
+                        let false_str = self
+                            .builder
+                            .build_global_string_ptr("false", "str_false")
+                            .unwrap();
+                        let res = self
+                            .builder
+                            .build_select(
+                                bool_val,
+                                true_str.as_basic_value_enum(),
+                                false_str.as_basic_value_enum(),
+                                "bool_show",
+                            )
+                            .unwrap();
+                        return Ok(res);
+                    }
+
+                    // String -> identity
+                    let is_string = recv_ty.as_ref().map(|t| t.is_string()).unwrap_or(false)
+                        || matches!(receiver, Atom::Literal(crate::ast::Literal::String(_)));
+                    if is_string && recv_val.is_pointer_value() {
+                        return Ok(recv_val);
+                    }
+
+                    // Integers -> snprintf "%ld" or "%lu"
+                    if recv_val.is_int_value() {
+                        let int_val = recv_val.into_int_value();
+                        let i64_type = self.context.i64_type();
+                        let is_unsigned = recv_ty
+                            .as_ref()
+                            .map(|t| t.is_unsigned_integer())
+                            .unwrap_or(false)
+                            || matches!(receiver, Atom::Literal(crate::ast::Literal::UInt(_)));
+                        let ext_val = if is_unsigned {
+                            self.builder
+                                .build_int_z_extend(int_val, i64_type, "zext")
+                                .unwrap()
+                        } else {
+                            self.builder
+                                .build_int_s_extend(int_val, i64_type, "sext")
+                                .unwrap()
+                        };
+                        let fmt = if is_unsigned { "%lu" } else { "%ld" };
+                        let fmt_str = self
+                            .builder
+                            .build_global_string_ptr(fmt, "fmt_int")
+                            .unwrap();
+                        let buf_size = i64_type.const_int(32, false);
+                        let buf_call = self
+                            .builder
+                            .build_call(self.runtime.malloc_fn, &[buf_size.into()], "int_buf")
+                            .unwrap();
+                        let buf = buf_call
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                        let _ = self.builder.build_call(
+                            self.runtime.snprintf_fn,
+                            &[
+                                buf.into(),
+                                buf_size.into(),
+                                fmt_str.as_basic_value_enum().into(),
+                                ext_val.into(),
+                            ],
+                            "",
+                        );
+                        return Ok(buf.into());
+                    }
+
+                    // Floats -> snprintf "%g"
+                    if recv_val.is_float_value() {
+                        let flt_val = recv_val.into_float_value();
+                        let f64_type = self.context.f64_type();
+                        let ext_val = if flt_val.get_type() == self.context.f32_type() {
+                            self.builder
+                                .build_float_ext(flt_val, f64_type, "fpext")
+                                .unwrap()
+                        } else {
+                            flt_val
+                        };
+                        let fmt_str = self
+                            .builder
+                            .build_global_string_ptr("%g", "fmt_float")
+                            .unwrap();
+                        let buf_size = self.context.i64_type().const_int(64, false);
+                        let buf_call = self
+                            .builder
+                            .build_call(self.runtime.malloc_fn, &[buf_size.into()], "flt_buf")
+                            .unwrap();
+                        let buf = buf_call
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_pointer_value();
+                        let _ = self.builder.build_call(
+                            self.runtime.snprintf_fn,
+                            &[
+                                buf.into(),
+                                buf_size.into(),
+                                fmt_str.as_basic_value_enum().into(),
+                                ext_val.into(),
+                            ],
+                            "",
+                        );
+                        return Ok(buf.into());
                     }
                 }
 
@@ -977,12 +1112,41 @@ impl<'ctx> CodeGen<'ctx> {
         {
             return idx;
         }
+        if let Some(recv_ty) = self.get_atom_type(base) {
+            if let Type::Named { name, .. } = &recv_ty
+                && let Some(m) = self.type_field_indices.get(name)
+                && let Some(&idx) = m.get(field)
+            {
+                return idx;
+            }
+            if let Type::Record(flds) = &recv_ty {
+                for (i, (f_name, _)) in flds.iter().enumerate() {
+                    if f_name == field {
+                        return (i + 1) as u32;
+                    }
+                }
+            }
+        }
         // Fallback default index
         match field {
             "x" | "first" | "radius" | "host" | "value" | "code" => 1,
             "y" | "second" | "w" | "port" | "message" => 2,
             "z" | "h" | "tls" => 3,
             _ => 1,
+        }
+    }
+
+    pub(crate) fn get_atom_type(&self, atom: &Atom) -> Option<Type> {
+        match atom {
+            Atom::Var(name) => self.var_types.get(name).cloned(),
+            Atom::Literal(lit) => match lit {
+                crate::ast::Literal::Int(_) => Some(Type::i32()),
+                crate::ast::Literal::UInt(_) => Some(Type::u64()),
+                crate::ast::Literal::Float(_) => Some(Type::f64()),
+                crate::ast::Literal::Bool(_) => Some(Type::bool()),
+                crate::ast::Literal::String(_) => Some(Type::string()),
+                crate::ast::Literal::Unit => Some(Type::void()),
+            },
         }
     }
 }

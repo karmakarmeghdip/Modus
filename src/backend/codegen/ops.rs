@@ -4,6 +4,7 @@ use super::CodeGen;
 use crate::ast::{BinaryOp, Literal};
 use crate::desugar::DesugaredUnaryOp;
 use crate::ir::node::Atom;
+use inkwell::AddressSpace;
 use inkwell::FloatPredicate;
 use inkwell::IntPredicate;
 use inkwell::types::BasicTypeEnum;
@@ -180,6 +181,22 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
             self.compile_binary_op(op, l.into(), r.into())
         } else if lhs.is_pointer_value() && rhs.is_pointer_value() {
+            if op == BinaryOp::Add {
+                let call = self
+                    .builder
+                    .build_call(
+                        self.runtime.str_concat_fn,
+                        &[lhs.into(), rhs.into()],
+                        "str_concat",
+                    )
+                    .map_err(|e| e.to_string())?;
+                return Ok(call.try_as_basic_value().basic().unwrap_or_else(|| {
+                    self.context
+                        .ptr_type(AddressSpace::default())
+                        .const_null()
+                        .into()
+                }));
+            }
             let l = self
                 .builder
                 .build_ptr_to_int(lhs.into_pointer_value(), self.context.i64_type(), "ptri")

@@ -27,6 +27,11 @@ where
         let str_lit = select! { Token::Str(s) => Literal::String(s) }
             .map_with(|lit, extra| Spanned::new(Expr::Literal(lit), to_ast_span(extra.span())));
 
+        let template_str = select! { Token::TemplateStr(s) => s }.try_map(|s, span| {
+            expand_template_string(&s, to_ast_span(span))
+                .map_err(|err_msg| Rich::custom(span, err_msg))
+        });
+
         let bool_lit = select! {
             Token::True => Literal::Bool(true),
             Token::False => Literal::Bool(false),
@@ -195,6 +200,7 @@ where
             float_lit,
             int_lit,
             str_lit,
+            template_str,
             bool_lit,
             closure_expr,
             unit_lit,
@@ -437,4 +443,169 @@ where
             },
         )
     })
+}
+
+enum TemplateSegment {
+    Lit(String),
+    Expr(Spanned<Expr>),
+}
+
+fn expand_template_string(s: &str, span: crate::ast::Span) -> Result<Spanned<Expr>, String> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut current_lit = String::new();
+    let mut segments = Vec::new();
+
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"\\\\") {
+            current_lit.push('\\');
+            i += 2;
+        } else if bytes[i..].starts_with(b"\\${") {
+            current_lit.push_str("${");
+            i += 3;
+        } else if bytes[i..].starts_with(b"${") {
+            if !current_lit.is_empty() {
+                segments.push(TemplateSegment::Lit(std::mem::take(&mut current_lit)));
+            }
+            i += 2; // skip "${"
+            let start = i;
+            let mut depth = 1;
+            let mut in_str = false;
+            let mut in_char = false;
+            let mut escape = false;
+
+            while i < bytes.len() && depth > 0 {
+                let b = bytes[i];
+                if escape {
+                    escape = false;
+                    i += 1;
+                    continue;
+                }
+                if b == b'\\' {
+                    escape = true;
+                    i += 1;
+                    continue;
+                }
+                if in_str {
+                    if b == b'"' {
+                        in_str = false;
+                    }
+                    i += 1;
+                    continue;
+                }
+                if in_char {
+                    if b == b'\'' {
+                        in_char = false;
+                    }
+                    i += 1;
+                    continue;
+                }
+                if b == b'"' {
+                    in_str = true;
+                    i += 1;
+                    continue;
+                }
+                if b == b'\'' {
+                    in_char = true;
+                    i += 1;
+                    continue;
+                }
+                if b == b'{' {
+                    depth += 1;
+                    i += 1;
+                    continue;
+                }
+                if b == b'}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    i += 1;
+                    continue;
+                }
+                i += 1;
+            }
+
+            if depth != 0 {
+                return Err("Unterminated '${' in template string".to_string());
+            }
+
+            let expr_str = &s[start..i];
+            i += 1; // skip closing '}'
+
+            let parsed = crate::parser::parse_expr(expr_str.trim()).map_err(|errs| {
+                format!(
+                    "Invalid expression in template string: {}",
+                    errs.into_iter()
+                        .map(|e| e.message)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )
+            })?;
+            segments.push(TemplateSegment::Expr(parsed));
+        } else {
+            let ch = s[i..].chars().next().unwrap();
+            current_lit.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    if !current_lit.is_empty() {
+        segments.push(TemplateSegment::Lit(current_lit));
+    }
+
+    // Desugar segments
+    if segments.is_empty() {
+        return Ok(Spanned::new(
+            Expr::Literal(Literal::String(String::new())),
+            span,
+        ));
+    }
+
+    // If more than 1 segment, filter out empty literal segments
+    if segments.len() > 1 {
+        segments.retain(|seg| match seg {
+            TemplateSegment::Lit(lit) => !lit.is_empty(),
+            TemplateSegment::Expr(_) => true,
+        });
+    }
+
+    if segments.is_empty() {
+        return Ok(Spanned::new(
+            Expr::Literal(Literal::String(String::new())),
+            span,
+        ));
+    }
+
+    let mut expr_parts: Vec<Spanned<Expr>> = Vec::new();
+    for seg in segments {
+        match seg {
+            TemplateSegment::Lit(lit) => {
+                expr_parts.push(Spanned::new(Expr::Literal(Literal::String(lit)), span));
+            }
+            TemplateSegment::Expr(sub_expr) => {
+                let show_call = Expr::MethodCall {
+                    receiver: Box::new(sub_expr),
+                    method: "show".to_string(),
+                    args: vec![],
+                };
+                expr_parts.push(Spanned::new(show_call, span));
+            }
+        }
+    }
+
+    let mut iter = expr_parts.into_iter();
+    let first = iter.next().unwrap();
+    let folded = iter.fold(first, |acc, next| {
+        Spanned::new(
+            Expr::Binary {
+                op: BinaryOp::Add,
+                lhs: Box::new(acc),
+                rhs: Box::new(next),
+            },
+            span,
+        )
+    });
+
+    Ok(folded)
 }

@@ -12,7 +12,7 @@ use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::values::FunctionValue;
+use inkwell::values::{BasicValue, FunctionValue};
 
 /// Manages runtime declarations and helper functions in an LLVM module.
 pub struct Runtime<'ctx> {
@@ -21,10 +21,14 @@ pub struct Runtime<'ctx> {
     pub free_fn: FunctionValue<'ctx>,
     pub puts_fn: FunctionValue<'ctx>,
     pub printf_fn: FunctionValue<'ctx>,
+    pub strlen_fn: FunctionValue<'ctx>,
+    pub memcpy_fn: FunctionValue<'ctx>,
+    pub snprintf_fn: FunctionValue<'ctx>,
     pub alloc_fn: FunctionValue<'ctx>,
     pub inc_ref_fn: FunctionValue<'ctx>,
     pub dec_ref_fn: FunctionValue<'ctx>,
     pub is_unique_fn: FunctionValue<'ctx>,
+    pub str_concat_fn: FunctionValue<'ctx>,
 }
 
 impl<'ctx> Runtime<'ctx> {
@@ -58,25 +62,48 @@ impl<'ctx> Runtime<'ctx> {
             module.add_function("printf", fn_type, None)
         });
 
-        // 5. Build helper: modus_alloc(size: i64) -> ptr
+        // 5. extern size_t strlen(const char* str);
+        let strlen_fn = module.get_function("strlen").unwrap_or_else(|| {
+            let fn_type = i64_type.fn_type(&[i8_ptr.into()], false);
+            module.add_function("strlen", fn_type, None)
+        });
+
+        // 6. extern void* memcpy(void* dest, const void* src, size_t n);
+        let memcpy_fn = module.get_function("memcpy").unwrap_or_else(|| {
+            let fn_type = i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i64_type.into()], false);
+            module.add_function("memcpy", fn_type, None)
+        });
+
+        // 7. extern int snprintf(char* str, size_t size, const char* format, ...);
+        let snprintf_fn = module.get_function("snprintf").unwrap_or_else(|| {
+            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i64_type.into(), i8_ptr.into()], true);
+            module.add_function("snprintf", fn_type, None)
+        });
+
+        // 8. Build helper: modus_alloc(size: i64) -> ptr
         let alloc_fn = module
             .get_function("modus_alloc")
             .unwrap_or_else(|| Self::build_alloc_fn(context, module, malloc_fn));
 
-        // 6. Build helper: modus_inc_ref(ptr: ptr) -> void
+        // 9. Build helper: modus_inc_ref(ptr: ptr) -> void
         let inc_ref_fn = module
             .get_function("modus_inc_ref")
             .unwrap_or_else(|| Self::build_inc_ref_fn(context, module));
 
-        // 7. Build helper: modus_dec_ref(ptr: ptr) -> void
+        // 10. Build helper: modus_dec_ref(ptr: ptr) -> void
         let dec_ref_fn = module
             .get_function("modus_dec_ref")
             .unwrap_or_else(|| Self::build_dec_ref_fn(context, module, free_fn));
 
-        // 8. Build helper: modus_is_unique(ptr: ptr) -> bool
+        // 11. Build helper: modus_is_unique(ptr: ptr) -> bool
         let is_unique_fn = module
             .get_function("modus_is_unique")
             .unwrap_or_else(|| Self::build_is_unique_fn(context, module));
+
+        // 12. Build helper: modus_str_concat(s1: ptr, s2: ptr) -> ptr
+        let str_concat_fn = module.get_function("modus_str_concat").unwrap_or_else(|| {
+            Self::build_str_concat_fn(context, module, malloc_fn, strlen_fn, memcpy_fn)
+        });
 
         Self {
             context,
@@ -84,10 +111,14 @@ impl<'ctx> Runtime<'ctx> {
             free_fn,
             puts_fn,
             printf_fn,
+            strlen_fn,
+            memcpy_fn,
+            snprintf_fn,
             alloc_fn,
             inc_ref_fn,
             dec_ref_fn,
             is_unique_fn,
+            str_concat_fn,
         }
     }
 
@@ -247,6 +278,127 @@ impl<'ctx> Runtime<'ctx> {
             .unwrap();
 
         let _ = builder.build_return(Some(&is_one));
+        func
+    }
+
+    /// Emits `modus_str_concat(s1: ptr, s2: ptr) -> ptr`:
+    /// Allocates buffer, copies s1 and s2, appends null terminator, and returns pointer.
+    fn build_str_concat_fn(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        malloc_fn: FunctionValue<'ctx>,
+        strlen_fn: FunctionValue<'ctx>,
+        memcpy_fn: FunctionValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let i8_ptr = context.ptr_type(AddressSpace::default());
+        let i64_type = context.i64_type();
+        let fn_type = i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
+        let func = module.add_function("modus_str_concat", fn_type, None);
+
+        let builder = context.create_builder();
+        let entry_bb = context.append_basic_block(func, "entry");
+        builder.position_at_end(entry_bb);
+
+        let s1 = func.get_nth_param(0).unwrap().into_pointer_value();
+        let s2 = func.get_nth_param(1).unwrap().into_pointer_value();
+
+        // Null checks for s1 and s2
+        let s1_int = builder.build_ptr_to_int(s1, i64_type, "s1_int").unwrap();
+        let s1_is_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                s1_int,
+                i64_type.const_int(0, false),
+                "s1_null",
+            )
+            .unwrap();
+
+        let s2_int = builder.build_ptr_to_int(s2, i64_type, "s2_int").unwrap();
+        let s2_is_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                s2_int,
+                i64_type.const_int(0, false),
+                "s2_null",
+            )
+            .unwrap();
+
+        let dummy_empty = builder
+            .build_global_string_ptr("", "empty_str")
+            .unwrap()
+            .as_basic_value_enum()
+            .into_pointer_value();
+
+        // Safe strlen calls
+        let safe_s1_len = builder
+            .build_select(s1_is_null, dummy_empty, s1, "safe_s1_len")
+            .unwrap()
+            .into_pointer_value();
+        let len1_call = builder
+            .build_call(strlen_fn, &[safe_s1_len.into()], "len1")
+            .unwrap();
+        let len1 = len1_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+
+        let safe_s2_len = builder
+            .build_select(s2_is_null, dummy_empty, s2, "safe_s2_len")
+            .unwrap()
+            .into_pointer_value();
+        let len2_call = builder
+            .build_call(strlen_fn, &[safe_s2_len.into()], "len2")
+            .unwrap();
+        let len2 = len2_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+
+        let total_chars = builder.build_int_add(len1, len2, "total_chars").unwrap();
+        let total_len = builder
+            .build_int_add(total_chars, i64_type.const_int(1, false), "total_len")
+            .unwrap();
+
+        let mem_call = builder
+            .build_call(malloc_fn, &[total_len.into()], "buf")
+            .unwrap();
+        let buf = mem_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+
+        // Copy s1
+        let safe_s1 = builder
+            .build_select(s1_is_null, buf, s1, "safe_s1")
+            .unwrap()
+            .into_pointer_value();
+        let _ = builder.build_call(memcpy_fn, &[buf.into(), safe_s1.into(), len1.into()], "");
+
+        // Copy s2 at buf + len1
+        let buf_int = builder.build_ptr_to_int(buf, i64_type, "buf_int").unwrap();
+        let dest2_int = builder.build_int_add(buf_int, len1, "dest2_int").unwrap();
+        let dest2 = builder
+            .build_int_to_ptr(dest2_int, i8_ptr, "dest2")
+            .unwrap();
+        let safe_s2 = builder
+            .build_select(s2_is_null, buf, s2, "safe_s2")
+            .unwrap()
+            .into_pointer_value();
+        let _ = builder.build_call(memcpy_fn, &[dest2.into(), safe_s2.into(), len2.into()], "");
+
+        // Null terminator at buf + total_chars
+        let null_pos_int = builder
+            .build_int_add(buf_int, total_chars, "null_pos_int")
+            .unwrap();
+        let null_pos = builder
+            .build_int_to_ptr(null_pos_int, i8_ptr, "null_pos")
+            .unwrap();
+        let _ = builder.build_store(null_pos, context.i8_type().const_int(0, false));
+
+        let _ = builder.build_return(Some(&buf));
         func
     }
 }

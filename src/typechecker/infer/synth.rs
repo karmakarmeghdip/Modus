@@ -385,7 +385,7 @@ impl<'a> TypeInferrer<'a> {
                 }
                 let resolver = TraitResolver::new(self.env);
                 let method_sig = resolver.resolve_method(
-                    &receiver_ty,
+                    &applied_ty,
                     method,
                     &self.generic_bounds,
                     Some(expr.span),
@@ -479,10 +479,20 @@ impl<'a> TypeInferrer<'a> {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
                     let lhs_ty = self.synth_expr(lhs)?;
                     self.check_expr(rhs, &lhs_ty)?;
-                    if !lhs_ty.is_numeric() && lhs_ty != Type::string() {
+                    if *op == BinaryOp::Add {
+                        if !lhs_ty.is_numeric() && lhs_ty != Type::string() {
+                            return Err(TypeError::new(
+                                TypeErrorKind::TypeMismatch {
+                                    expected: "numeric or String type".to_string(),
+                                    found: lhs_ty.to_string(),
+                                },
+                                Some(lhs.span),
+                            ));
+                        }
+                    } else if !lhs_ty.is_numeric() {
                         return Err(TypeError::new(
                             TypeErrorKind::TypeMismatch {
-                                expected: "numeric or String type".to_string(),
+                                expected: "numeric type".to_string(),
                                 found: lhs_ty.to_string(),
                             },
                             Some(lhs.span),

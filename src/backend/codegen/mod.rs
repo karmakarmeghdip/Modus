@@ -34,11 +34,13 @@ pub struct CodeGen<'ctx> {
     pub type_lowerer: TypeLowerer<'ctx>,
     pub runtime: Runtime<'ctx>,
     pub(crate) variables: HashMap<String, BasicValueEnum<'ctx>>,
+    pub(crate) var_types: HashMap<String, Type>,
     pub(crate) functions: HashMap<String, FunctionValue<'ctx>>,
     pub(crate) fn_ret_types: HashMap<String, Type>,
     pub(crate) current_fn: Option<FunctionValue<'ctx>>,
     pub(crate) current_fn_ret: Option<Type>,
     pub(crate) record_field_indices: HashMap<String, BTreeMap<String, u32>>,
+    pub(crate) type_field_indices: HashMap<String, BTreeMap<String, u32>>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -55,16 +57,32 @@ impl<'ctx> CodeGen<'ctx> {
             type_lowerer,
             runtime,
             variables: HashMap::new(),
+            var_types: HashMap::new(),
             functions: HashMap::new(),
             fn_ret_types: HashMap::new(),
             current_fn: None,
             current_fn_ret: None,
             record_field_indices: HashMap::new(),
+            type_field_indices: HashMap::new(),
         }
     }
 
     /// Compiles an entire `AnfProgram` into the LLVM module.
     pub fn compile_program(&mut self, prog: &AnfProgram) -> Result<(), String> {
+        // Collect record type field indices
+        for ty_decl in &prog.types {
+            if let crate::ast::TypeDef::Alias(crate::ast::Type::Record(fields)) =
+                &ty_decl.definition.node
+            {
+                let mut idx_map = BTreeMap::new();
+                for (i, (f_name, _)) in fields.iter().enumerate() {
+                    idx_map.insert(f_name.clone(), (i + 1) as u32);
+                }
+                self.type_field_indices
+                    .insert(ty_decl.name.clone(), idx_map);
+            }
+        }
+
         // 0. Declare imported external functions
         for ext in &prog.extern_functions {
             self.declare_external_function(ext);
@@ -144,14 +162,30 @@ impl<'ctx> CodeGen<'ctx> {
         self.current_fn = Some(fn_val);
         self.current_fn_ret = Some(func.return_type.clone());
         self.variables.clear();
+        self.var_types.clear();
 
         let entry_bb = self.context.append_basic_block(fn_val, "entry");
         self.builder.position_at_end(entry_bb);
 
-        // Map function parameters to their LLVM argument values
-        for (i, (param_name, _)) in func.params.iter().enumerate() {
+        // Map function parameters to their LLVM argument values and types
+        for (i, (param_name, param_ty)) in func.params.iter().enumerate() {
             let arg_val = fn_val.get_nth_param(i as u32).unwrap();
             self.variables.insert(param_name.clone(), arg_val);
+            self.var_types.insert(param_name.clone(), param_ty.clone());
+
+            if let Type::Record(flds) = param_ty {
+                let mut idx_map = BTreeMap::new();
+                for (j, (f_name, _)) in flds.iter().enumerate() {
+                    idx_map.insert(f_name.clone(), (j + 1) as u32);
+                }
+                self.record_field_indices
+                    .insert(param_name.clone(), idx_map);
+            } else if let Type::Named { name, .. } = param_ty
+                && let Some(idx_map) = self.type_field_indices.get(name)
+            {
+                self.record_field_indices
+                    .insert(param_name.clone(), idx_map.clone());
+            }
         }
 
         self.compile_block(&func.body)?;
@@ -178,6 +212,7 @@ impl<'ctx> CodeGen<'ctx> {
                 value,
                 span: _,
             } => {
+                self.var_types.insert(var.clone(), ty.clone());
                 let llvm_val = self.compile_expr(value, ty)?;
                 self.variables.insert(var.clone(), llvm_val);
 
@@ -193,6 +228,11 @@ impl<'ctx> CodeGen<'ctx> {
                         idx_map.insert(f_name.clone(), (i + 1) as u32);
                     }
                     self.record_field_indices.insert(var.clone(), idx_map);
+                } else if let Type::Named { name, .. } = ty
+                    && let Some(idx_map) = self.type_field_indices.get(name)
+                {
+                    self.record_field_indices
+                        .insert(var.clone(), idx_map.clone());
                 }
             }
 

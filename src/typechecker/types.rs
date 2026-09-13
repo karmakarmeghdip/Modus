@@ -196,6 +196,19 @@ impl Type {
         matches!(self, Type::Primitive(PrimitiveType::Bool))
     }
 
+    pub fn is_string(&self) -> bool {
+        matches!(self, Type::Primitive(PrimitiveType::String))
+    }
+
+    pub fn is_unsigned_integer(&self) -> bool {
+        matches!(
+            self,
+            Type::Primitive(
+                PrimitiveType::U8 | PrimitiveType::U16 | PrimitiveType::U32 | PrimitiveType::U64
+            )
+        )
+    }
+
     /// Recursively check if a type variable occurs in this type
     pub fn contains_var(&self, var: TypeVarId) -> bool {
         match self {
