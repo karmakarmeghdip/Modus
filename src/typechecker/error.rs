@@ -66,6 +66,8 @@ pub enum TypeErrorKind {
     MissingFunctionBody { function_name: String },
     /// Function declared with a body in a library export map file
     UnexpectedFunctionBodyInHeader { function_name: String },
+    /// Invalid type cast
+    InvalidCast { from: String, to: String },
     /// General semantic error
     General(String),
 }
@@ -179,6 +181,9 @@ impl fmt::Display for TypeErrorKind {
                     f,
                     "Function '{function_name}' cannot define a body in a library export map. Remove the body and terminate the signature with ';' to declare the exported symbol."
                 )
+            }
+            Self::InvalidCast { from, to } => {
+                write!(f, "Invalid cast from '{from}' to '{to}'")
             }
             Self::General(msg) => {
                 write!(f, "{msg}")

@@ -547,3 +547,80 @@ fn test_codegen_let_if_expression() {
     let res = codegen.jit_run().expect("JIT run failed");
     assert_eq!(res, modus::backend::ExecutionResult::I32(13));
 }
+
+#[test]
+fn test_codegen_cast_integers() {
+    let source = r#"
+        function main(): i32 {
+            let u: u8 = 200 as u8;
+            let w: i32 = u as i32; // zero-extended: 200
+
+            let s: i8 = -10 as i8;
+            let sw: i32 = s as i32; // sign-extended: -10
+
+            let big: i64 = 1000000000000 as i64;
+            let nar: i32 = big as i32; // truncated
+
+            // 200 + (-10) = 190
+            return w + sw;
+        }
+    "#;
+    let context = Context::create();
+    let codegen =
+        modus::compile_source(&context, source, "test_cast_integers").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(190));
+}
+
+#[test]
+fn test_codegen_cast_floats_and_ints() {
+    let source = r#"
+        function main(): i32 {
+            let x: f64 = 3.85;
+            let truncated: i32 = x as i32; // 3
+
+            let y: i32 = 42;
+            let f: f64 = y as f64; // 42.0
+
+            let f32_val: f32 = 1.5 as f32;
+            let f64_val: f64 = f32_val as f64; // 1.5
+
+            let f_int: i32 = f64_val as i32; // 1
+
+            return truncated + f_int; // 3 + 1 = 4
+        }
+    "#;
+    let context = Context::create();
+    let codegen =
+        modus::compile_source(&context, source, "test_cast_floats").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(4));
+}
+
+#[test]
+fn test_codegen_cast_bool_and_pointer() {
+    let source = r#"
+        function main(): i32 {
+            let t: i32 = true as i32;   // 1
+            let f: i32 = false as i32;  // 0
+            let b1: bool = 100 as bool; // true
+            let b0: bool = 0 as bool;   // false
+
+            let sum: i32 = if (b1 && !b0) {
+                t + f + 10 // 1 + 0 + 10 = 11
+            } else {
+                0
+            };
+
+            return sum;
+        }
+    "#;
+    let context = Context::create();
+    let codegen =
+        modus::compile_source(&context, source, "test_cast_bool").expect("Compile failed");
+    codegen.optimize(None).expect("Optimize failed");
+    let res = codegen.jit_run().expect("JIT run failed");
+    assert_eq!(res, modus::backend::ExecutionResult::I32(11));
+}

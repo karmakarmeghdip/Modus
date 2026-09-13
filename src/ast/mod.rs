@@ -239,6 +239,10 @@ pub enum Expr {
         arms: Vec<MatchArm>,
     },
     Block(Vec<Spanned<Stmt>>),
+    Cast {
+        expr: Box<Spanned<Expr>>,
+        target_type: Spanned<Type>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

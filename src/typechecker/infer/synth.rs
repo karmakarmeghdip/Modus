@@ -1,7 +1,7 @@
 //! Bottom-up type synthesis for Modus expressions.
 
 use crate::ast::{
-    self, BinaryOp, ElseBranch, Expr, FunctionBody, Literal, MatchArmBody, Spanned, UnaryOp,
+    self, BinaryOp, ElseBranch, Expr, FunctionBody, Literal, MatchArmBody, Span, Spanned, UnaryOp,
 };
 use crate::typechecker::error::{TypeError, TypeErrorKind};
 use crate::typechecker::infer::TypeInferrer;
@@ -412,6 +412,29 @@ impl<'a> TypeInferrer<'a> {
                     return Ok(Type::i64());
                 }
 
+                if expanded_recv.is_string() && method == "charCodeAt" {
+                    if args.len() != 1 {
+                        return Err(TypeError::new(
+                            TypeErrorKind::ArgCountMismatch {
+                                expected: 1,
+                                found: args.len(),
+                            },
+                            Some(expr.span),
+                        ));
+                    }
+                    let idx_ty = self.synth_expr(&args[0])?;
+                    if !idx_ty.is_integer() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::TypeMismatch {
+                                expected: "integer index".to_string(),
+                                found: idx_ty.to_string(),
+                            },
+                            Some(args[0].span),
+                        ));
+                    }
+                    return Ok(Type::i32());
+                }
+
                 let resolver = TraitResolver::new(self.env);
                 let method_sig = resolver.resolve_method(
                     &applied_ty,
@@ -506,42 +529,85 @@ impl<'a> TypeInferrer<'a> {
 
             Expr::Binary { lhs, op, rhs } => match op {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
-                    let lhs_ty = self.synth_expr(lhs)?;
-                    self.check_expr(rhs, &lhs_ty)?;
+                    let lhs_is_lit = matches!(
+                        &lhs.node,
+                        Expr::Literal(Literal::Int(_) | Literal::UInt(_) | Literal::Float(_))
+                    );
+                    let rhs_is_lit = matches!(
+                        &rhs.node,
+                        Expr::Literal(Literal::Int(_) | Literal::UInt(_) | Literal::Float(_))
+                    );
+                    let op_ty = if lhs_is_lit && !rhs_is_lit {
+                        let rhs_ty = self.synth_expr(rhs)?;
+                        self.check_expr(lhs, &rhs_ty)?;
+                        rhs_ty
+                    } else {
+                        let lhs_ty = self.synth_expr(lhs)?;
+                        self.check_expr(rhs, &lhs_ty)?;
+                        lhs_ty
+                    };
                     if *op == BinaryOp::Add {
-                        if !lhs_ty.is_numeric() && lhs_ty != Type::string() {
+                        if !op_ty.is_numeric() && op_ty != Type::string() {
                             return Err(TypeError::new(
                                 TypeErrorKind::TypeMismatch {
                                     expected: "numeric or String type".to_string(),
-                                    found: lhs_ty.to_string(),
+                                    found: op_ty.to_string(),
                                 },
                                 Some(lhs.span),
                             ));
                         }
-                    } else if !lhs_ty.is_numeric() {
+                    } else if !op_ty.is_numeric() {
                         return Err(TypeError::new(
                             TypeErrorKind::TypeMismatch {
                                 expected: "numeric type".to_string(),
-                                found: lhs_ty.to_string(),
+                                found: op_ty.to_string(),
                             },
                             Some(lhs.span),
                         ));
                     }
-                    lhs_ty
+                    op_ty
                 }
                 BinaryOp::Eq | BinaryOp::NotEq => {
-                    let lhs_ty = self.synth_expr(lhs)?;
-                    self.check_expr(rhs, &lhs_ty)?;
+                    let lhs_is_lit = matches!(
+                        &lhs.node,
+                        Expr::Literal(Literal::Int(_) | Literal::UInt(_) | Literal::Float(_))
+                    );
+                    let rhs_is_lit = matches!(
+                        &rhs.node,
+                        Expr::Literal(Literal::Int(_) | Literal::UInt(_) | Literal::Float(_))
+                    );
+                    if lhs_is_lit && !rhs_is_lit {
+                        let rhs_ty = self.synth_expr(rhs)?;
+                        self.check_expr(lhs, &rhs_ty)?;
+                    } else {
+                        let lhs_ty = self.synth_expr(lhs)?;
+                        self.check_expr(rhs, &lhs_ty)?;
+                    }
                     Type::bool()
                 }
                 BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
-                    let lhs_ty = self.synth_expr(lhs)?;
-                    self.check_expr(rhs, &lhs_ty)?;
-                    if !lhs_ty.is_numeric() {
+                    let lhs_is_lit = matches!(
+                        &lhs.node,
+                        Expr::Literal(Literal::Int(_) | Literal::UInt(_) | Literal::Float(_))
+                    );
+                    let rhs_is_lit = matches!(
+                        &rhs.node,
+                        Expr::Literal(Literal::Int(_) | Literal::UInt(_) | Literal::Float(_))
+                    );
+                    let op_ty = if lhs_is_lit && !rhs_is_lit {
+                        let rhs_ty = self.synth_expr(rhs)?;
+                        self.check_expr(lhs, &rhs_ty)?;
+                        rhs_ty
+                    } else {
+                        let lhs_ty = self.synth_expr(lhs)?;
+                        self.check_expr(rhs, &lhs_ty)?;
+                        lhs_ty
+                    };
+                    if !op_ty.is_numeric() {
                         return Err(TypeError::new(
                             TypeErrorKind::TypeMismatch {
                                 expected: "numeric type".to_string(),
-                                found: lhs_ty.to_string(),
+                                found: op_ty.to_string(),
                             },
                             Some(lhs.span),
                         ));
@@ -755,8 +821,68 @@ impl<'a> TypeInferrer<'a> {
                 self.env.exit_scope();
                 ty
             }
+
+            Expr::Cast {
+                expr: sub_expr,
+                target_type,
+            } => {
+                let from_ty = self.synth_expr(sub_expr)?;
+                let from_ty_expanded = self.subst.apply(&from_ty);
+                let generics: Vec<String> = self.generic_bounds.keys().cloned().collect();
+                let to_ty = self.env.resolve_ast_type(
+                    &target_type.node,
+                    &generics,
+                    Some(target_type.span),
+                )?;
+                let to_ty_expanded = self.subst.apply(&to_ty);
+                self.validate_cast(&from_ty_expanded, &to_ty_expanded, expr.span)?;
+                to_ty_expanded
+            }
         };
 
         Ok(self.subst.apply(&ty))
+    }
+
+    pub(crate) fn validate_cast(
+        &self,
+        from_ty: &Type,
+        to_ty: &Type,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let from = self.expand_type(from_ty);
+        let to = self.expand_type(to_ty);
+
+        // 1. Identity cast: T as T is always valid
+        if from == to {
+            return Ok(());
+        }
+
+        // 2. Numeric to numeric: (i8..i64, u8..u64, f32, f64)
+        if from.is_numeric() && to.is_numeric() {
+            return Ok(());
+        }
+
+        // 3. Bool to integer, and integer to bool
+        if (from.is_bool() && to.is_integer()) || (from.is_integer() && to.is_bool()) {
+            return Ok(());
+        }
+
+        // 4. Pointer / CString conversions
+        let from_is_ptr = from.is_pointer() || from.is_cstring();
+        let to_is_ptr = to.is_pointer() || to.is_cstring();
+        let from_is_int = from.is_integer();
+        let to_is_int = to.is_integer();
+
+        if (from_is_ptr && to_is_ptr) || (from_is_ptr && to_is_int) || (from_is_int && to_is_ptr) {
+            return Ok(());
+        }
+
+        Err(TypeError::new(
+            TypeErrorKind::InvalidCast {
+                from: from.to_string(),
+                to: to.to_string(),
+            },
+            Some(span),
+        ))
     }
 }

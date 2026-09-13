@@ -282,6 +282,7 @@ pub fn build_shared_library(
     }
     cmd.arg("-o").arg(output_lib_path);
     cmd.arg("-Wl,--allow-multiple-definition");
+    cmd.arg("-lm");
 
     let status = cmd
         .status()
@@ -425,6 +426,7 @@ pub fn build_executable(
     cmd.arg("-o").arg(output_binary);
     cmd.arg("-Wl,-rpath,$ORIGIN");
     cmd.arg("-Wl,--allow-multiple-definition");
+    cmd.arg("-lm");
 
     let status = cmd
         .status()
@@ -485,6 +487,7 @@ pub fn jit_run_graph(graph: &ModuleGraph) -> Result<ExecutionResult, String> {
         }
         cmd.arg("-o").arg(&dep_so);
         cmd.arg("-Wl,--allow-multiple-definition");
+        cmd.arg("-lm");
 
         let status = cmd
             .status()

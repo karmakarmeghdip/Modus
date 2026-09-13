@@ -35,7 +35,7 @@ This document specifies the architecture, implemented components, and forward-lo
      - Core string concatenation (`modus_str_concat`) and string equality (`modus_str_eq`)
      - Panic, abort, and bounds-check traps
    - Domain-specific logic (filesystem operations, environment inspection, process lifecycle, networking) must **never** be hardcoded into the compiler runtime. Instead, the standard library should be written in pure Modus code that interacts with the operating system via low-level `Pointer(T)` operations and thin libc `extern "C"` declarations.
-   - **Transitional Status**: Currently, a few specialized runtime helpers (such as `modus_fs_read_dir` and `modus_fs_rename` in `src/backend/runtime.rs`) bridge temporary gaps while Modus's pure FFI struct layout mechanisms and dynamic collection builders are being developed. In future phases, these helpers will be deprecated and eliminated from the compiler, decoupling standard library code entirely and shipping it separately as `modus-std` (akin to how `rustc` ships `rust-std`).
+   - **Transitional Status**: Currently, three specialized runtime helpers (`modus_fs_read_dir`, `modus_fs_rename`, and `modus_str_split` in `src/backend/runtime.rs`) bridge temporary gaps while Modus's pure FFI struct layout mechanisms and dynamic collection builders (`ArrayBuilder(T)`) are being developed. Pure string transformations (`toLowerCase`, `toUpperCase`, `fromCharCode`) and floating-point rounding (`fround` via `(x as f32) as f64`) are implemented 100% in pure Modus. In future phases, all remaining transitional helpers will be deprecated and eliminated from the compiler runtime, decoupling standard library code entirely and shipping it separately as `modus-std` (akin to how `rustc` ships `rust-std`).
 
 ---
 
@@ -271,36 +271,47 @@ Modus will follow this exact model. The compiler runtime (`src/backend/runtime.r
   - Primitive string operations (`modus_str_concat`, `modus_str_eq`).
   - Fatal panic / abort / array bounds-check handlers.
 - **What must be stripped out of the compiler**:
-  - `modus_fs_read_dir`, `modus_fs_rename`, and any future OS/subsystem helpers.
+  - `modus_fs_read_dir`, `modus_fs_rename`, `modus_str_split`, and any future domain helpers.
   - POSIX directory handling, file descriptors, environment inspection, network sockets, process spawning.
 
 #### 9. Current Status & Transitional Helpers
-Currently, Modus relies on a small number of transitional helpers in `src/backend/runtime.rs`:
+Currently, Modus relies on three transitional helpers in `src/backend/runtime.rs`:
 - `modus_fs_read_dir`: Implemented in LLVM IR because:
   1. Reading POSIX directories requires unpacking C's `struct dirent`, whose internal field offsets (e.g. `d_name`) vary across operating systems.
   2. Modus currently lacks dynamic array buffer builders that can push items into a `[String]` array while maintaining Perceus RC invariants.
 - `modus_fs_rename`: Implemented as a runtime shim to wrap libc `rename`.
+- `modus_str_split`: Implemented in LLVM IR because:
+  1. Modus array values `[T]` are heap-allocated records under Perceus RC (`{ rc: i64 = 1, len: i64, cap: i64, reserved: ptr, [T...] }`).
+  2. Modus array syntax currently only supports compile-time fixed-length literal constructors `[a, b, c]`. Modus lacks dynamic collection builders (`ArrayBuilder(T)` or `arr.push(elem)`).
+  3. Modus is pure-by-default: `split(s: String, delim: String): [String]` is a pure function. Raw pointer mutations (`Pointer.write`) require `IO(void)` effects, which cannot be invoked in a pure context (`perform` in non-`IO` function is a type error). Building a dynamic-length array of strings at runtime thus requires an accumulation mechanism or this transitional runtime helper.
 
-These helpers were pragmatically necessary during early bootstrap to unlock high-level `std:fs` APIs, but are explicitly marked for retirement.
+> [!NOTE]
+> - String transformations `toLowerCase`, `toUpperCase`, and character generator `fromCharCode` are implemented in 100% pure Modus using tail-recursive loops with zero runtime additions.
+> - Floating-point rounding `fround` is implemented in 100% pure Modus via native `(x as f32) as f64`. The `modus_fround` helper has been completely eliminated from the compiler runtime.
 
 #### 10. Decoupling Prerequisites
-To strip these helpers and move all standard library code to pure Modus, the following capabilities will be implemented:
+To strip the remaining helpers and move all standard library code to pure Modus, the following compiler capabilities will be implemented:
 1. **Platform-Specific C Struct / Pointer Offsetting in Pure Modus**:
    - Defining C-struct layouts or using pointer offset primitives: `dirent_ptr.offset(NAME_OFFSET).read()`.
    - Cross-platform target constants (e.g. Linux vs macOS vs Windows struct offsets).
 2. **Dynamic Collection Builders (`ListBuilder(T)` / `ArrayBuilder(T)`)**:
-   - Pure Modus utility to accumulate elements into an expandable buffer before sealing it into an immutable, Perceus-managed `[T]`.
-3. **Pure Modus libc / POSIX Declarations**:
+   - Pure or intrinsic collection builder allowing accumulation of elements before sealing into an immutable Perceus `[T]`. This unblocks replacing both `modus_fs_read_dir` and `modus_str_split`.
+3. **Explicit Type Casting / Numeric Conversion Syntax [COMPLETED]**:
+   - Language syntax `expr as Type` implemented across AST, parser, typechecker, ANF/IR, and LLVM backend, enabling integer widening/narrowing, float truncation/extension, int-float conversions, and pointer-integer conversions.
+4. **Pure Modus libc / POSIX Declarations**:
    - Moving all `opendir`, `readdir`, `closedir`, `rename`, `stat`, and other POSIX declarations into `stdlib/` Modus files without compiler backend involvement.
 
 #### 11. Decoupling Milestones
 - **Milestone 4.1: Pure Modus POSIX Re-implementation**:
-  - Rewrite `readDir` and `rename` in `stdlib/fs.mds` using pure Modus pointer operations and libc calls.
+  - Rewrite `readDir` and `rename` in `stdlib/fs.mds` using pure Modus pointer operations and libc calls once struct offsetting and `ArrayBuilder` are available.
   - Remove `modus_fs_read_dir` and `modus_fs_rename` from `src/backend/runtime.rs`.
-- **Milestone 4.2: Strip `src/backend/runtime.rs` to Minimal Kernel**:
-  - Audit compiler runtime exports to verify zero OS-specific symbols remain.
+- **Milestone 4.2: Pure Modus Dynamic Array Splitting**:
+  - Replace `modus_str_split` with pure Modus `split` leveraging `ArrayBuilder(String)`.
+  - Remove `modus_str_split` from `src/backend/runtime.rs`.
+- **Milestone 4.3: Strip `src/backend/runtime.rs` to Minimal Kernel**:
+  - Audit compiler runtime exports to verify zero OS-specific or domain-specific symbols remain.
   - Support a minimal, dependency-free runtime suitable for bare-metal / embedded targets (`no_std`).
-- **Milestone 4.3: Standalone `modus-std` Packaging**:
+- **Milestone 4.4: Standalone `modus-std` Packaging**:
   - Decouple `stdlib/*.mds` into an independent package (`modus-std`) with its own versioning, tests, and build pipeline.
   - The Modus compiler resolves `modus-std` via the standard module resolution pipeline (or a `--sysroot` flag) rather than hardcoding embedded strings inside the compiler binary.
 

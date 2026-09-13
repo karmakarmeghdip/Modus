@@ -828,3 +828,87 @@ extern "libc.so.6" function malloc(size: u64): IO(Pointer(void));
         _ => panic!("Expected Declaration::Extern"),
     }
 }
+
+#[test]
+fn test_parse_cast_expression() {
+    let src = "x as i64";
+    let res = parse_expr(src);
+    assert!(res.is_ok(), "Failed to parse cast: {:?}", res.err());
+    let expr = res.unwrap();
+    match expr.node {
+        Expr::Cast {
+            expr: inner,
+            target_type,
+        } => {
+            assert!(matches!(inner.node, Expr::Ident(ref s) if s == "x"));
+            assert_eq!(target_type.node, Type::Primitive(PrimitiveType::I64));
+        }
+        _ => panic!("Expected Expr::Cast, got {:?}", expr.node),
+    }
+
+    // Chained casts: x as f32 as f64
+    let chained_src = "x as f32 as f64";
+    let chained_res = parse_expr(chained_src);
+    assert!(
+        chained_res.is_ok(),
+        "Failed to parse chained cast: {:?}",
+        chained_res.err()
+    );
+    let chained_expr = chained_res.unwrap();
+    match chained_expr.node {
+        Expr::Cast {
+            expr: inner,
+            target_type,
+        } => {
+            assert_eq!(target_type.node, Type::Primitive(PrimitiveType::F64));
+            match inner.node {
+                Expr::Cast {
+                    expr: innermost,
+                    target_type: inner_ty,
+                } => {
+                    assert!(matches!(innermost.node, Expr::Ident(ref s) if s == "x"));
+                    assert_eq!(inner_ty.node, Type::Primitive(PrimitiveType::F32));
+                }
+                _ => panic!("Expected nested Expr::Cast"),
+            }
+        }
+        _ => panic!("Expected Expr::Cast"),
+    }
+}
+
+#[test]
+fn test_parse_cast_precedence() {
+    // Postfix method call binds tighter than cast: s.charCodeAt(0) as i64
+    let method_cast_src = "s.charCodeAt(0) as i64";
+    let res = parse_expr(method_cast_src);
+    assert!(res.is_ok(), "Failed to parse method cast: {:?}", res.err());
+    let expr = res.unwrap();
+    match expr.node {
+        Expr::Cast {
+            expr: inner,
+            target_type,
+        } => {
+            assert!(matches!(inner.node, Expr::MethodCall { .. }));
+            assert_eq!(target_type.node, Type::Primitive(PrimitiveType::I64));
+        }
+        _ => panic!("Expected Expr::Cast"),
+    }
+
+    // Cast binds tighter than binary addition: x + y as f64 -> x + (y as f64)
+    let bin_src = "x + y as f64";
+    let bin_res = parse_expr(bin_src);
+    assert!(
+        bin_res.is_ok(),
+        "Failed to parse binary with cast: {:?}",
+        bin_res.err()
+    );
+    let bin_expr = bin_res.unwrap();
+    match bin_expr.node {
+        Expr::Binary { lhs, op, rhs } => {
+            assert_eq!(op, BinaryOp::Add);
+            assert!(matches!(lhs.node, Expr::Ident(ref s) if s == "x"));
+            assert!(matches!(rhs.node, Expr::Cast { .. }));
+        }
+        _ => panic!("Expected Expr::Binary"),
+    }
+}

@@ -90,6 +90,7 @@ impl<'ctx> CodeGen<'ctx> {
             .arg(&obj_path)
             .arg("-o")
             .arg(output_binary)
+            .arg("-lm")
             .status()
             .map_err(|e| format!("Failed to invoke clang linker: {e}"))?;
 

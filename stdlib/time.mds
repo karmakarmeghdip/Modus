@@ -1,0 +1,110 @@
+// Standard Time Module for Modus (std:time)
+
+export type Duration = {
+    nanos: u64,
+};
+
+export type Instant = {
+    nanos: u64,
+};
+
+extern "C" {
+    function clock_gettime(clk_id: i32, tp: Pointer(u8)): IO(i32);
+    function usleep(usec: u64): IO(i32);
+    function malloc(size: u64): Pointer(u8);
+    function free(ptr: Pointer(void)): IO(void);
+}
+
+/// Returns current high-precision epoch timestamp in nanoseconds.
+export function nowNanos(): IO(u64) {
+    let buf: Pointer(u8) = malloc(16);
+    let res: i32 = perform clock_gettime(0, buf);
+    if (res < 0) {
+        perform free(buf.cast());
+        return 0;
+    } else {
+        let sec_ptr: Pointer(u64) = buf.cast();
+        let sec: u64 = perform sec_ptr.read();
+        let nsec_ptr: Pointer(u64) = sec_ptr.offset(1);
+        let nsec: u64 = perform nsec_ptr.read();
+        perform free(buf.cast());
+        let total: u64 = sec * 1000000000 + nsec;
+        return total;
+    }
+}
+
+/// Returns current epoch timestamp in milliseconds.
+export function now(): IO(u64) {
+    let nanos: u64 = perform nowNanos();
+    let millis: u64 = nanos / 1000000;
+    return millis;
+}
+
+/// Sleeps for specified duration in milliseconds.
+export function sleep(millis: u64): IO(void) {
+    let usec: u64 = millis * 1000;
+    perform usleep(usec);
+    return IO.pure(());
+}
+
+/// Sleeps for specified Duration.
+export function sleepDuration(d: Duration): IO(void) {
+    let millis: u64 = d.nanos / 1000000;
+    perform sleep(millis);
+    return IO.pure(());
+}
+
+export function durationFromNanos(nanos: u64): Duration => { nanos: nanos };
+export function durationFromMillis(millis: u64): Duration => { nanos: millis * 1000000 };
+export function durationFromSecs(secs: u64): Duration => { nanos: secs * 1000000000 };
+
+export function durationToNanos(d: Duration): u64 => d.nanos;
+export function durationToMillis(d: Duration): u64 => d.nanos / 1000000;
+export function durationToSecs(d: Duration): u64 => d.nanos / 1000000000;
+
+export function durationAdd(d1: Duration, d2: Duration): Duration => { nanos: d1.nanos + d2.nanos };
+
+export function durationSub(d1: Duration, d2: Duration): Duration {
+    if (d1.nanos < d2.nanos) {
+        return { nanos: 0 };
+    } else {
+        return { nanos: d1.nanos - d2.nanos };
+    }
+}
+
+/// Captures current monotonic timestamp Instant.
+export function instantNow(): IO(Instant) {
+    let buf: Pointer(u8) = malloc(16);
+    let res: i32 = perform clock_gettime(1, buf);
+    if (res < 0) {
+        perform free(buf.cast());
+        return { nanos: 0 };
+    } else {
+        let sec_ptr: Pointer(u64) = buf.cast();
+        let sec: u64 = perform sec_ptr.read();
+        let nsec_ptr: Pointer(u64) = sec_ptr.offset(1);
+        let nsec: u64 = perform nsec_ptr.read();
+        perform free(buf.cast());
+        let total: u64 = sec * 1000000000 + nsec;
+        return { nanos: total };
+    }
+}
+
+/// Returns Duration elapsed since instant.
+export function instantElapsed(i: Instant): IO(Duration) {
+    let cur: Instant = perform instantNow();
+    if (cur.nanos < i.nanos) {
+        return { nanos: 0 };
+    } else {
+        return { nanos: cur.nanos - i.nanos };
+    }
+}
+
+/// Returns Duration difference between two instants.
+export function instantDiff(after: Instant, before: Instant): Duration {
+    if (after.nanos < before.nanos) {
+        return { nanos: 0 };
+    } else {
+        return { nanos: after.nanos - before.nanos };
+    }
+}

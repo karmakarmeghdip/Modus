@@ -103,6 +103,8 @@ pub enum AnfExpr {
     },
     /// Reference count uniqueness check: `rc(base) == 1`
     IsUnique(Atom),
+    /// Explicit type cast: `expr as target_type`
+    Cast { expr: Atom, target_type: Type },
 }
 
 impl AnfExpr {
@@ -236,6 +238,11 @@ impl AnfExpr {
             }
             AnfExpr::IsUnique(atom) => {
                 if let Some(v) = atom.as_var() {
+                    vars.push(v.to_string());
+                }
+            }
+            AnfExpr::Cast { expr, .. } => {
+                if let Some(v) = expr.as_var() {
                     vars.push(v.to_string());
                 }
             }

@@ -154,6 +154,7 @@ impl fmt::Display for AnfExpr {
                 write!(f, " }})")
             }
             AnfExpr::IsUnique(atom) => write!(f, "is_unique({atom})"),
+            AnfExpr::Cast { expr, target_type } => write!(f, "{expr} as {target_type}"),
         }
     }
 }

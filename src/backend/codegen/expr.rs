@@ -433,6 +433,114 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
+                if method == "charCodeAt" && args.len() == 1 {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let is_str = recv_ty.as_ref().map(|t| t.is_string()).unwrap_or(true);
+                    if is_str {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "str_ptr")
+                                .unwrap()
+                        };
+                        let idx_val = self.eval_atom(&args[0])?.into_int_value();
+                        let i64_type = self.context.i64_type();
+                        let i32_type = self.context.i32_type();
+                        let idx_i64 = if idx_val.get_type().get_bit_width() < 64 {
+                            self.builder
+                                .build_int_s_extend(idx_val, i64_type, "ext_idx")
+                                .unwrap()
+                        } else {
+                            idx_val
+                        };
+
+                        let ptr_int = self
+                            .builder
+                            .build_ptr_to_int(ptr, i64_type, "ptr_int")
+                            .unwrap();
+                        let is_null = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                ptr_int,
+                                i64_type.const_int(0, false),
+                                "is_null",
+                            )
+                            .unwrap();
+
+                        let len_call = self
+                            .builder
+                            .build_call(self.runtime.strlen_fn, &[ptr.into()], "str_len")
+                            .unwrap();
+                        let len = len_call
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_int_value();
+
+                        let lt_zero = self
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::SLT,
+                                idx_i64,
+                                i64_type.const_int(0, false),
+                                "lt_zero",
+                            )
+                            .unwrap();
+                        let ge_len = self
+                            .builder
+                            .build_int_compare(inkwell::IntPredicate::SGE, idx_i64, len, "ge_len")
+                            .unwrap();
+                        let oob = self.builder.build_or(lt_zero, ge_len, "oob").unwrap();
+                        let invalid = self.builder.build_or(is_null, oob, "invalid").unwrap();
+
+                        let cur_fn = self.current_fn.unwrap();
+                        let in_bounds_bb = self
+                            .context
+                            .append_basic_block(cur_fn, "char_code_in_bounds");
+                        let oob_bb = self.context.append_basic_block(cur_fn, "char_code_oob");
+                        let merge_bb = self.context.append_basic_block(cur_fn, "char_code_merge");
+
+                        let _ =
+                            self.builder
+                                .build_conditional_branch(invalid, oob_bb, in_bounds_bb);
+
+                        self.builder.position_at_end(in_bounds_bb);
+                        let char_ptr = unsafe {
+                            self.builder
+                                .build_gep(self.context.i8_type(), ptr, &[idx_i64], "char_ptr")
+                                .unwrap()
+                        };
+                        let byte_val = self
+                            .builder
+                            .build_load(self.context.i8_type(), char_ptr, "byte_val")
+                            .unwrap()
+                            .into_int_value();
+                        let char_code = self
+                            .builder
+                            .build_int_z_extend(byte_val, i32_type, "char_code")
+                            .unwrap();
+                        let in_bounds_done_bb = self.builder.get_insert_block().unwrap();
+                        let _ = self.builder.build_unconditional_branch(merge_bb);
+
+                        self.builder.position_at_end(oob_bb);
+                        let minus_one = i32_type.const_int((-1i32) as u64, true);
+                        let oob_done_bb = self.builder.get_insert_block().unwrap();
+                        let _ = self.builder.build_unconditional_branch(merge_bb);
+
+                        self.builder.position_at_end(merge_bb);
+                        let phi = self.builder.build_phi(i32_type, "res_char_code").unwrap();
+                        phi.add_incoming(&[
+                            (&char_code, in_bounds_done_bb),
+                            (&minus_one, oob_done_bb),
+                        ]);
+                        return Ok(phi.as_basic_value());
+                    }
+                }
+
                 // Built-in Show.show for primitives
                 if method == "show" && args.is_empty() {
                     let recv_ty = self.get_atom_type(receiver);
@@ -1135,6 +1243,12 @@ impl<'ctx> CodeGen<'ctx> {
                 Ok(phi.as_basic_value())
             }
 
+            AnfExpr::Cast { expr, target_type } => {
+                let val = self.eval_atom(expr)?;
+                let src_ty = self.get_atom_type(expr);
+                self.compile_cast(val, src_ty.as_ref(), target_type)
+            }
+
             _ => Ok(self.context.i64_type().const_int(0, false).into()),
         }
     }
@@ -1257,6 +1371,31 @@ impl<'ctx> CodeGen<'ctx> {
                     };
                     for (j, pat) in patterns.iter().enumerate() {
                         if let crate::desugar::DesugaredPattern::Ident(v) = pat {
+                            let elem_ty = if let Some(Type::Named { name, args }) = &sc_ty {
+                                if name == "Result" {
+                                    if variant == "Ok" && !args.is_empty() {
+                                        Some(args[0].clone())
+                                    } else if variant == "Err" && args.len() > 1 {
+                                        Some(args[1].clone())
+                                    } else {
+                                        None
+                                    }
+                                } else if name == "Option" && variant == "Some" && !args.is_empty()
+                                {
+                                    Some(args[0].clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            let llvm_load_ty = if let Some(t) = &elem_ty {
+                                self.type_lowerer.llvm_type(t)
+                            } else {
+                                self.context.i64_type().into()
+                            };
+
                             let field_ptr = unsafe {
                                 self.builder
                                     .build_gep(
@@ -1269,21 +1408,12 @@ impl<'ctx> CodeGen<'ctx> {
                             };
                             let f_val = self
                                 .builder
-                                .build_load(self.context.i64_type(), field_ptr, "f_val")
+                                .build_load(llvm_load_ty, field_ptr, "f_val")
                                 .unwrap();
                             self.variables.insert(v.clone(), f_val);
 
-                            if let Some(Type::Named { name, args }) = &sc_ty {
-                                if name == "Result" {
-                                    if variant == "Ok" && !args.is_empty() {
-                                        self.var_types.insert(v.clone(), args[0].clone());
-                                    } else if variant == "Err" && args.len() > 1 {
-                                        self.var_types.insert(v.clone(), args[1].clone());
-                                    }
-                                } else if name == "Option" && variant == "Some" && !args.is_empty()
-                                {
-                                    self.var_types.insert(v.clone(), args[0].clone());
-                                }
+                            if let Some(t) = elem_ty {
+                                self.var_types.insert(v.clone(), t);
                             }
                         }
                     }
@@ -1303,6 +1433,18 @@ impl<'ctx> CodeGen<'ctx> {
                     for (f_name, opt_pat) in fields {
                         if let Some(crate::desugar::DesugaredPattern::Ident(v)) = opt_pat {
                             let f_idx = self.get_field_index(scrutinee, f_name);
+                            let field_mod_ty = if let Some(Type::Record(flds)) = &sc_ty {
+                                flds.iter()
+                                    .find(|(n, _)| n.as_str() == f_name.as_str())
+                                    .map(|(_, fty)| fty.clone())
+                            } else {
+                                None
+                            };
+                            let llvm_load_ty = if let Some(t) = &field_mod_ty {
+                                self.type_lowerer.llvm_type(t)
+                            } else {
+                                self.context.i64_type().into()
+                            };
                             let f_ptr = unsafe {
                                 self.builder
                                     .build_gep(
@@ -1315,15 +1457,12 @@ impl<'ctx> CodeGen<'ctx> {
                             };
                             let f_val = self
                                 .builder
-                                .build_load(self.context.i64_type(), f_ptr, "fld_val")
+                                .build_load(llvm_load_ty, f_ptr, "fld_val")
                                 .unwrap();
                             self.variables.insert(v.clone(), f_val);
 
-                            if let Some(Type::Record(flds)) = &sc_ty
-                                && let Some((_, fty)) =
-                                    flds.iter().find(|(n, _)| n.as_str() == f_name.as_str())
-                            {
-                                self.var_types.insert(v.clone(), fty.clone());
+                            if let Some(t) = field_mod_ty {
+                                self.var_types.insert(v.clone(), t);
                             }
                         }
                     }
@@ -1516,5 +1655,157 @@ impl<'ctx> CodeGen<'ctx> {
                 crate::ast::Literal::Unit => Some(Type::void()),
             },
         }
+    }
+
+    pub(crate) fn compile_cast(
+        &mut self,
+        val: BasicValueEnum<'ctx>,
+        src_ty: Option<&Type>,
+        target_ty: &Type,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let dst_llvm_ty = self.type_lowerer.llvm_type(target_ty);
+
+        // 1. Target is boolean
+        if target_ty.is_bool() {
+            if val.is_int_value() {
+                let val_int = val.into_int_value();
+                if val_int.get_type().get_bit_width() == 1 {
+                    return Ok(val);
+                }
+                let zero = val_int.get_type().const_zero();
+                let cmp = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, val_int, zero, "cast_itob")
+                    .unwrap();
+                return Ok(cmp.into());
+            } else if val.is_float_value() {
+                let val_flt = val.into_float_value();
+                let zero = val_flt.get_type().const_zero();
+                let cmp = self
+                    .builder
+                    .build_float_compare(inkwell::FloatPredicate::ONE, val_flt, zero, "cast_ftob")
+                    .unwrap();
+                return Ok(cmp.into());
+            } else if val.is_pointer_value() {
+                let val_ptr = val.into_pointer_value();
+                let val_int = self
+                    .builder
+                    .build_ptr_to_int(val_ptr, self.context.i64_type(), "ptr_int")
+                    .unwrap();
+                let cmp = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        val_int,
+                        self.context.i64_type().const_zero(),
+                        "cast_ptob",
+                    )
+                    .unwrap();
+                return Ok(cmp.into());
+            }
+        }
+
+        // 2. Target is integer
+        if dst_llvm_ty.is_int_type() {
+            let dst_int = dst_llvm_ty.into_int_type();
+            if val.is_int_value() {
+                let val_int = val.into_int_value();
+                let src_width = val_int.get_type().get_bit_width();
+                let dst_width = dst_int.get_bit_width();
+                if src_width > dst_width {
+                    return Ok(self
+                        .builder
+                        .build_int_truncate(val_int, dst_int, "cast_trunc")
+                        .unwrap()
+                        .into());
+                } else if src_width < dst_width {
+                    let is_unsigned = src_ty
+                        .map(|t| t.is_unsigned_integer() || t.is_bool())
+                        .unwrap_or(false);
+                    if is_unsigned {
+                        return Ok(self
+                            .builder
+                            .build_int_z_extend(val_int, dst_int, "cast_zext")
+                            .unwrap()
+                            .into());
+                    } else {
+                        return Ok(self
+                            .builder
+                            .build_int_s_extend(val_int, dst_int, "cast_sext")
+                            .unwrap()
+                            .into());
+                    }
+                } else {
+                    return Ok(val);
+                }
+            } else if val.is_float_value() {
+                let val_flt = val.into_float_value();
+                if target_ty.is_unsigned_integer() {
+                    return Ok(self
+                        .builder
+                        .build_float_to_unsigned_int(val_flt, dst_int, "cast_ftoui")
+                        .unwrap()
+                        .into());
+                } else {
+                    return Ok(self
+                        .builder
+                        .build_float_to_signed_int(val_flt, dst_int, "cast_ftosi")
+                        .unwrap()
+                        .into());
+                }
+            } else if val.is_pointer_value() {
+                return Ok(self
+                    .builder
+                    .build_ptr_to_int(val.into_pointer_value(), dst_int, "cast_ptoi")
+                    .unwrap()
+                    .into());
+            }
+        }
+
+        // 3. Target is float
+        if dst_llvm_ty.is_float_type() {
+            let dst_flt = dst_llvm_ty.into_float_type();
+            if val.is_float_value() {
+                return Ok(self
+                    .builder
+                    .build_float_cast(val.into_float_value(), dst_flt, "cast_fcast")
+                    .unwrap()
+                    .into());
+            } else if val.is_int_value() {
+                let val_int = val.into_int_value();
+                let is_unsigned = src_ty
+                    .map(|t| t.is_unsigned_integer() || t.is_bool())
+                    .unwrap_or(false);
+                if is_unsigned {
+                    return Ok(self
+                        .builder
+                        .build_unsigned_int_to_float(val_int, dst_flt, "cast_uitof")
+                        .unwrap()
+                        .into());
+                } else {
+                    return Ok(self
+                        .builder
+                        .build_signed_int_to_float(val_int, dst_flt, "cast_sitof")
+                        .unwrap()
+                        .into());
+                }
+            }
+        }
+
+        // 4. Target is pointer
+        if dst_llvm_ty.is_pointer_type() {
+            let dst_ptr = dst_llvm_ty.into_pointer_type();
+            if val.is_int_value() {
+                return Ok(self
+                    .builder
+                    .build_int_to_ptr(val.into_int_value(), dst_ptr, "cast_itop")
+                    .unwrap()
+                    .into());
+            } else if val.is_pointer_value() {
+                return Ok(val);
+            }
+        }
+
+        Ok(val)
     }
 }

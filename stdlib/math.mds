@@ -1,0 +1,138 @@
+// Standard Math Module for Modus (std:math)
+
+export function PI(): f64 => 3.141592653589793;
+export function E(): f64 => 2.718281828459045;
+export function LN10(): f64 => 2.302585092994046;
+export function LN2(): f64 => 0.6931471805599453;
+export function LOG10E(): f64 => 0.4342944819032518;
+export function LOG2E(): f64 => 1.4426950408889634;
+export function SQRT1_2(): f64 => 0.7071067811865476;
+export function SQRT2(): f64 => 1.4142135623730951;
+export function TAU(): f64 => 6.283185307179586;
+
+export extern "C" {
+    function sqrt(x: f64): f64;
+    function cbrt(x: f64): f64;
+    function exp(x: f64): f64;
+    function expm1(x: f64): f64;
+    function log(x: f64): f64;
+    function log10(x: f64): f64;
+    function log2(x: f64): f64;
+    function log1p(x: f64): f64;
+    function pow(base: f64, exp: f64): f64;
+    function sin(x: f64): f64;
+    function cos(x: f64): f64;
+    function tan(x: f64): f64;
+    function asin(x: f64): f64;
+    function acos(x: f64): f64;
+    function atan(x: f64): f64;
+    function atan2(y: f64, x: f64): f64;
+    function sinh(x: f64): f64;
+    function cosh(x: f64): f64;
+    function tanh(x: f64): f64;
+    function asinh(x: f64): f64;
+    function acosh(x: f64): f64;
+    function atanh(x: f64): f64;
+    function floor(x: f64): f64;
+    function ceil(x: f64): f64;
+    function round(x: f64): f64;
+    function trunc(x: f64): f64;
+    function hypot(x: f64, y: f64): f64;
+}
+
+extern "C" {
+    function fabs(x: f64): f64;
+    function drand48(): IO(f64);
+}
+
+// Basic and Arithmetic Functions
+export function abs(x: f64): f64 => fabs(x);
+export function absI(x: i64): i64 => if (x < 0) { -x } else { x };
+
+export function sign(x: f64): f64 {
+    if (x > 0.0) {
+        return 1.0;
+    } else if (x < 0.0) {
+        return -1.0;
+    } else {
+        return 0.0;
+    }
+}
+
+export function signI(x: i64): i64 {
+    if (x > 0) {
+        return 1;
+    } else if (x < 0) {
+        return -1;
+    } else {
+        return 0;
+    }
+}
+
+export function min(a: f64, b: f64): f64 => if (a < b) { a } else { b };
+export function max(a: f64, b: f64): f64 => if (a > b) { a } else { b };
+
+export function minI(a: i64, b: i64): i64 => if (a < b) { a } else { b };
+export function maxI(a: i64, b: i64): i64 => if (a > b) { a } else { b };
+
+export function clamp(x: f64, minVal: f64, maxVal: f64): f64 {
+    if (x < minVal) {
+        return minVal;
+    } else if (x > maxVal) {
+        return maxVal;
+    } else {
+        return x;
+    }
+}
+
+export function clampI(x: i64, minVal: i64, maxVal: i64): i64 {
+    if (x < minVal) {
+        return minVal;
+    } else if (x > maxVal) {
+        return maxVal;
+    } else {
+        return x;
+    }
+}
+
+export function imul(a: i64, b: i64): i64 {
+    let a_mod: i64 = a % 4294967296;
+    let a_32: i64 = if (a_mod < 0) { a_mod + 4294967296 } else { a_mod };
+    let b_mod: i64 = b % 4294967296;
+    let b_32: i64 = if (b_mod < 0) { b_mod + 4294967296 } else { b_mod };
+    let prod: i64 = (a_32 * b_32) % 4294967296;
+    if (prod >= 2147483648) {
+        return prod - 4294967296;
+    } else {
+        return prod;
+    }
+}
+
+function clz32_helper(val: i64, bit: i64, p: i64): i64 {
+    if (val >= p) {
+        return 31 - bit;
+    } else if (bit == 0) {
+        return 32;
+    } else {
+        return clz32_helper(val, bit - 1, p / 2);
+    }
+}
+
+export function clz32(x: i64): i64 {
+    let u: i64 = x % 4294967296;
+    let pos_u: i64 = if (u < 0) { u + 4294967296 } else { u };
+    if (pos_u <= 0) {
+        return 32;
+    } else {
+        return clz32_helper(pos_u, 31, 2147483648);
+    }
+}
+
+export function ln(x: f64): f64 => log(x);
+export function fround(x: f64): f64 => (x as f32) as f64;
+
+// Randomness
+export function random(): IO(f64) {
+    let r: f64 = perform drand48();
+    return r;
+}

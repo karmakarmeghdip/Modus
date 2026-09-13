@@ -231,6 +231,33 @@ impl<'ctx> CodeGen<'ctx> {
                             };
                             for (j, pat) in patterns.iter().enumerate() {
                                 if let crate::desugar::DesugaredPattern::Ident(v) = pat {
+                                    let elem_ty = if let Some(Type::Named { name, args }) = &sc_ty {
+                                        if name == "Result" {
+                                            if variant == "Ok" && !args.is_empty() {
+                                                Some(args[0].clone())
+                                            } else if variant == "Err" && args.len() > 1 {
+                                                Some(args[1].clone())
+                                            } else {
+                                                None
+                                            }
+                                        } else if name == "Option"
+                                            && variant == "Some"
+                                            && !args.is_empty()
+                                        {
+                                            Some(args[0].clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+
+                                    let llvm_load_ty = if let Some(t) = &elem_ty {
+                                        self.type_lowerer.llvm_type(t)
+                                    } else {
+                                        self.context.i64_type().into()
+                                    };
+
                                     let field_ptr = unsafe {
                                         self.builder
                                             .build_gep(
@@ -246,23 +273,12 @@ impl<'ctx> CodeGen<'ctx> {
                                     };
                                     let f_val = self
                                         .builder
-                                        .build_load(self.context.i64_type(), field_ptr, "f_val")
+                                        .build_load(llvm_load_ty, field_ptr, "f_val")
                                         .unwrap();
                                     self.variables.insert(v.clone(), f_val);
 
-                                    if let Some(Type::Named { name, args }) = &sc_ty {
-                                        if name == "Result" {
-                                            if variant == "Ok" && !args.is_empty() {
-                                                self.var_types.insert(v.clone(), args[0].clone());
-                                            } else if variant == "Err" && args.len() > 1 {
-                                                self.var_types.insert(v.clone(), args[1].clone());
-                                            }
-                                        } else if name == "Option"
-                                            && variant == "Some"
-                                            && !args.is_empty()
-                                        {
-                                            self.var_types.insert(v.clone(), args[0].clone());
-                                        }
+                                    if let Some(t) = elem_ty {
+                                        self.var_types.insert(v.clone(), t);
                                     }
                                 }
                             }
@@ -282,6 +298,18 @@ impl<'ctx> CodeGen<'ctx> {
                             for (f_name, opt_pat) in fields {
                                 if let Some(crate::desugar::DesugaredPattern::Ident(v)) = opt_pat {
                                     let f_idx = self.get_field_index(scrutinee, f_name);
+                                    let field_mod_ty = if let Some(Type::Record(flds)) = &sc_ty {
+                                        flds.iter()
+                                            .find(|(n, _)| n.as_str() == f_name.as_str())
+                                            .map(|(_, fty)| fty.clone())
+                                    } else {
+                                        None
+                                    };
+                                    let llvm_load_ty = if let Some(t) = &field_mod_ty {
+                                        self.type_lowerer.llvm_type(t)
+                                    } else {
+                                        self.context.i64_type().into()
+                                    };
                                     let f_ptr = unsafe {
                                         self.builder
                                             .build_gep(
@@ -297,15 +325,12 @@ impl<'ctx> CodeGen<'ctx> {
                                     };
                                     let f_val = self
                                         .builder
-                                        .build_load(self.context.i64_type(), f_ptr, "fld_val")
+                                        .build_load(llvm_load_ty, f_ptr, "fld_val")
                                         .unwrap();
                                     self.variables.insert(v.clone(), f_val);
 
-                                    if let Some(Type::Record(flds)) = &sc_ty
-                                        && let Some((_, fty)) =
-                                            flds.iter().find(|(n, _)| n.as_str() == f_name.as_str())
-                                    {
-                                        self.var_types.insert(v.clone(), fty.clone());
+                                    if let Some(t) = field_mod_ty {
+                                        self.var_types.insert(v.clone(), t);
                                     }
                                 }
                             }

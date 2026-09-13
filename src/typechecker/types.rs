@@ -494,8 +494,8 @@ impl Substitution {
                 if t1_elems.len() != t2_elems.len() {
                     return Err(TypeError::new(
                         TypeErrorKind::TypeMismatch {
-                            expected: t1.to_string(),
-                            found: t2.to_string(),
+                            expected: t2.to_string(),
+                            found: t1.to_string(),
                         },
                         span,
                     ));
@@ -523,8 +523,8 @@ impl Substitution {
 
             _ => Err(TypeError::new(
                 TypeErrorKind::TypeMismatch {
-                    expected: t1.to_string(),
-                    found: t2.to_string(),
+                    expected: t2.to_string(),
+                    found: t1.to_string(),
                 },
                 span,
             )),

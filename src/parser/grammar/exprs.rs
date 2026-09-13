@@ -221,6 +221,7 @@ where
             FieldAccess(String, crate::ast::Span),
             Index(Spanned<Expr>, crate::ast::Span),
             Call(Vec<Spanned<Expr>>, crate::ast::Span),
+            Cast(Spanned<Type>, crate::ast::Span),
         }
 
         let args = expr
@@ -250,7 +251,11 @@ where
         let call_action =
             args.map_with(|args, extra| PostfixAction::Call(args, to_ast_span(extra.span())));
 
-        let postfix_action = choice((dot_call_or_field, index_action, call_action));
+        let as_action = just(Token::As)
+            .ignore_then(type_parser())
+            .map_with(|ty, extra| PostfixAction::Cast(ty, to_ast_span(extra.span())));
+
+        let postfix_action = choice((dot_call_or_field, index_action, call_action, as_action));
 
         let postfix = atom
             .foldl(postfix_action.repeated(), |receiver, action| match action {
@@ -291,6 +296,16 @@ where
                         Expr::Call {
                             callee: Box::new(receiver),
                             args,
+                        },
+                        span,
+                    )
+                }
+                PostfixAction::Cast(target_type, action_span) => {
+                    let span = crate::ast::Span::new(receiver.span.start, action_span.end);
+                    Spanned::new(
+                        Expr::Cast {
+                            expr: Box::new(receiver),
+                            target_type,
                         },
                         span,
                     )

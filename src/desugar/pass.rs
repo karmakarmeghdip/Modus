@@ -575,6 +575,21 @@ impl<'a> DesugarContext<'a> {
                     expr.span,
                 )
             }
+
+            ast::Expr::Cast {
+                expr: sub_expr,
+                target_type: _,
+            } => {
+                let desugared_sub = self.desugar_expr(sub_expr);
+                DesugaredExpr::new(
+                    DesugaredExprKind::Cast {
+                        expr: Box::new(desugared_sub),
+                        target_type: expr_ty.clone(),
+                    },
+                    expr_ty,
+                    expr.span,
+                )
+            }
         }
     }
 

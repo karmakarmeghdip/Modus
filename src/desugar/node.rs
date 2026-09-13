@@ -125,6 +125,10 @@ pub enum DesugaredExprKind {
         arms: Vec<DesugaredMatchArm>,
     },
     Block(Vec<DesugaredStmt>),
+    Cast {
+        expr: Box<DesugaredExpr>,
+        target_type: Type,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

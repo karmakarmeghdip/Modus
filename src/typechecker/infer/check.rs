@@ -1,6 +1,8 @@
 //! Top-down bidirectional expression checking for Modus.
 
-use crate::ast::{self, ElseBranch, Expr, FunctionBody, Literal, MatchArmBody, Spanned, UnaryOp};
+use crate::ast::{
+    self, BinaryOp, ElseBranch, Expr, FunctionBody, Literal, MatchArmBody, Spanned, UnaryOp,
+};
 use crate::typechecker::error::{TypeError, TypeErrorKind};
 use crate::typechecker::infer::TypeInferrer;
 use crate::typechecker::traits::TraitResolver;
@@ -90,6 +92,19 @@ impl<'a> TypeInferrer<'a> {
                 _,
             ) if expected.is_numeric() => {
                 self.check_expr(sub_expr, &expected)?;
+                Ok(expected.clone())
+            }
+
+            // Case 5c: Binary arithmetic/string op checked against expected numeric/string type
+            (Expr::Binary { lhs, op, rhs }, _)
+                if (matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem
+                )) && (expected.is_numeric()
+                    || (expected == Type::string() && *op == BinaryOp::Add)) =>
+            {
+                self.check_expr(lhs, &expected)?;
+                self.check_expr(rhs, &expected)?;
                 Ok(expected.clone())
             }
 

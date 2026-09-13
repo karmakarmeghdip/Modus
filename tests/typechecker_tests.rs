@@ -610,3 +610,60 @@ extern "C" {
         "Extern function with body must be rejected"
     );
 }
+
+#[test]
+fn test_typecheck_valid_casts() {
+    let source = r#"
+function test_casts(p: Pointer(i32)): IO(void) {
+    let a: i64 = 42 as i64;
+    let b: u8 = a as u8;
+    let c: i32 = b as i32;
+    let f: f32 = 3.14 as f32;
+    let d: f64 = f as f64;
+    let fi: f64 = 42 as f64;
+    let ifl: i32 = fi as i32;
+    let bi: i32 = true as i32;
+    let ib: bool = 1 as bool;
+    let addr: u64 = p as u64;
+    let p2: Pointer(i32) = addr as Pointer(i32);
+    let p_void: Pointer(void) = p as Pointer(void);
+    return IO.pure(());
+}
+"#;
+    let program = parse_program(source).expect("Parsing must succeed");
+    let result = check_program(&program);
+    assert!(
+        result.is_ok(),
+        "Valid casts should typecheck: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_typecheck_invalid_casts() {
+    let bad_str = r#"
+function f(): i32 {
+    return "hello" as i32;
+}
+"#;
+    let prog1 = parse_program(bad_str).unwrap();
+    let res1 = check_program(&prog1);
+    assert!(res1.is_err());
+    assert!(matches!(
+        res1.unwrap_err().kind,
+        TypeErrorKind::InvalidCast { .. }
+    ));
+
+    let bad_arr = r#"
+function f(): f64 {
+    return [1, 2, 3] as f64;
+}
+"#;
+    let prog2 = parse_program(bad_arr).unwrap();
+    let res2 = check_program(&prog2);
+    assert!(res2.is_err());
+    assert!(matches!(
+        res2.unwrap_err().kind,
+        TypeErrorKind::InvalidCast { .. }
+    ));
+}

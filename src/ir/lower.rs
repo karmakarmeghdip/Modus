@@ -544,6 +544,17 @@ impl AnfLowerCtx {
                     AnfTail::Match { scrutinee, arms } => AnfExpr::Match { scrutinee, arms },
                 }
             }
+
+            DesugaredExprKind::Cast {
+                expr: sub_expr,
+                target_type,
+            } => {
+                let atom = self.lower_expr_to_atom(sub_expr, stmts);
+                AnfExpr::Cast {
+                    expr: atom,
+                    target_type: target_type.clone(),
+                }
+            }
         };
 
         stmts.push(AnfStmt::Let {
