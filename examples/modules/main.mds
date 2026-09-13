@@ -1,12 +1,9 @@
 import { sum_range, factorial } from "./math.mds";
 import * as Geo from "./geom.mds";
 import "./utils.mds";
+import {println} from "std:io";
 
-extern "C" {
-    function printf(fmt: CString, val: i32): IO(i32);
-}
-
-function main(): IO(void) {
+function main(): IO(i32) {
     let p1: Geo.Point = { x: 10, y: 20 };
     let p2: Geo.Point = { x: 7, y: 16 };
     let d: i32 = Geo.distance_sq(p1, p2); // dx=3, dy=4 -> 3^2 + 4^2 = 25
@@ -15,7 +12,6 @@ function main(): IO(void) {
     let f: i32 = factorial(4, 1);  // 24
 
     let total: i32 = d + s + f; // 25 + 55 + 24 = 104
-    let fmt: CString = String.toCString("%d\n");
-    perform printf(fmt, total);
-    return IO.pure(());
+    perform println(`${total}`);
+    return IO.pure(0);
 }

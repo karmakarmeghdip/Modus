@@ -207,61 +207,105 @@ impl<'ctx> CodeGen<'ctx> {
 
                     // Position in arm_bb and bind pattern variables
                     self.builder.position_at_end(arm_bb);
+                    let sc_ty = self.get_atom_type(scrutinee);
                     match &arm.pattern {
                         crate::desugar::DesugaredPattern::Ident(name) => {
                             self.variables.insert(name.clone(), sc_val);
+                            if let Some(t) = &sc_ty {
+                                self.var_types.insert(name.clone(), t.clone());
+                            }
                         }
-                        crate::desugar::DesugaredPattern::Variant { patterns, .. } => {
-                            if sc_val.is_pointer_value() {
-                                for (j, pat) in patterns.iter().enumerate() {
-                                    if let crate::desugar::DesugaredPattern::Ident(v) = pat {
-                                        let field_ptr = unsafe {
-                                            self.builder
-                                                .build_gep(
-                                                    self.context.i64_type(),
-                                                    sc_val.into_pointer_value(),
-                                                    &[self
-                                                        .context
-                                                        .i64_type()
-                                                        .const_int((2 + j) as u64, false)],
-                                                    "payload_gep",
-                                                )
-                                                .unwrap()
-                                        };
-                                        let f_val = self
-                                            .builder
-                                            .build_load(self.context.i64_type(), field_ptr, "f_val")
-                                            .unwrap();
-                                        self.variables.insert(v.clone(), f_val);
+                        crate::desugar::DesugaredPattern::Variant {
+                            variant, patterns, ..
+                        } => {
+                            let sc_ptr = if sc_val.is_pointer_value() {
+                                sc_val.into_pointer_value()
+                            } else {
+                                self.builder
+                                    .build_int_to_ptr(
+                                        sc_val.into_int_value(),
+                                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                                        "sc_ptr",
+                                    )
+                                    .unwrap()
+                            };
+                            for (j, pat) in patterns.iter().enumerate() {
+                                if let crate::desugar::DesugaredPattern::Ident(v) = pat {
+                                    let field_ptr = unsafe {
+                                        self.builder
+                                            .build_gep(
+                                                self.context.i64_type(),
+                                                sc_ptr,
+                                                &[self
+                                                    .context
+                                                    .i64_type()
+                                                    .const_int((2 + j) as u64, false)],
+                                                "payload_gep",
+                                            )
+                                            .unwrap()
+                                    };
+                                    let f_val = self
+                                        .builder
+                                        .build_load(self.context.i64_type(), field_ptr, "f_val")
+                                        .unwrap();
+                                    self.variables.insert(v.clone(), f_val);
+
+                                    if let Some(Type::Named { name, args }) = &sc_ty {
+                                        if name == "Result" {
+                                            if variant == "Ok" && !args.is_empty() {
+                                                self.var_types.insert(v.clone(), args[0].clone());
+                                            } else if variant == "Err" && args.len() > 1 {
+                                                self.var_types.insert(v.clone(), args[1].clone());
+                                            }
+                                        } else if name == "Option"
+                                            && variant == "Some"
+                                            && !args.is_empty()
+                                        {
+                                            self.var_types.insert(v.clone(), args[0].clone());
+                                        }
                                     }
                                 }
                             }
                         }
                         crate::desugar::DesugaredPattern::Record(fields) => {
-                            if sc_val.is_pointer_value() {
-                                for (f_name, opt_pat) in fields {
-                                    if let Some(crate::desugar::DesugaredPattern::Ident(v)) =
-                                        opt_pat
+                            let sc_ptr = if sc_val.is_pointer_value() {
+                                sc_val.into_pointer_value()
+                            } else {
+                                self.builder
+                                    .build_int_to_ptr(
+                                        sc_val.into_int_value(),
+                                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                                        "sc_ptr",
+                                    )
+                                    .unwrap()
+                            };
+                            for (f_name, opt_pat) in fields {
+                                if let Some(crate::desugar::DesugaredPattern::Ident(v)) = opt_pat {
+                                    let f_idx = self.get_field_index(scrutinee, f_name);
+                                    let f_ptr = unsafe {
+                                        self.builder
+                                            .build_gep(
+                                                self.context.i64_type(),
+                                                sc_ptr,
+                                                &[self
+                                                    .context
+                                                    .i64_type()
+                                                    .const_int(f_idx as u64, false)],
+                                                "fld_ptr",
+                                            )
+                                            .unwrap()
+                                    };
+                                    let f_val = self
+                                        .builder
+                                        .build_load(self.context.i64_type(), f_ptr, "fld_val")
+                                        .unwrap();
+                                    self.variables.insert(v.clone(), f_val);
+
+                                    if let Some(Type::Record(flds)) = &sc_ty
+                                        && let Some((_, fty)) =
+                                            flds.iter().find(|(n, _)| n.as_str() == f_name.as_str())
                                     {
-                                        let f_idx = self.get_field_index(scrutinee, f_name);
-                                        let f_ptr = unsafe {
-                                            self.builder
-                                                .build_gep(
-                                                    self.context.i64_type(),
-                                                    sc_val.into_pointer_value(),
-                                                    &[self
-                                                        .context
-                                                        .i64_type()
-                                                        .const_int(f_idx as u64, false)],
-                                                    "f_ptr",
-                                                )
-                                                .unwrap()
-                                        };
-                                        let f_val = self
-                                            .builder
-                                            .build_load(self.context.i64_type(), f_ptr, "f_val")
-                                            .unwrap();
-                                        self.variables.insert(v.clone(), f_val);
+                                        self.var_types.insert(v.clone(), fty.clone());
                                     }
                                 }
                             }

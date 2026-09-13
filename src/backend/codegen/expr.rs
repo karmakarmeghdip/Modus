@@ -22,6 +22,59 @@ impl<'ctx> CodeGen<'ctx> {
             AnfExpr::Binary { op, lhs, rhs } => {
                 let mut l_val = self.eval_atom(lhs)?;
                 let mut r_val = self.eval_atom(rhs)?;
+
+                let l_is_str = self
+                    .get_atom_type(lhs)
+                    .as_ref()
+                    .map(|t| t.is_string())
+                    .unwrap_or(false);
+                let r_is_str = self
+                    .get_atom_type(rhs)
+                    .as_ref()
+                    .map(|t| t.is_string())
+                    .unwrap_or(false);
+                if (l_is_str || r_is_str) && (*op == BinaryOp::Eq || *op == BinaryOp::NotEq) {
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let l_ptr = if l_val.is_pointer_value() {
+                        l_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(l_val.into_int_value(), ptr_ty, "l_ptr")
+                            .unwrap()
+                    };
+                    let r_ptr = if r_val.is_pointer_value() {
+                        r_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(r_val.into_int_value(), ptr_ty, "r_ptr")
+                            .unwrap()
+                    };
+                    let cmp_call = self
+                        .builder
+                        .build_call(
+                            self.runtime.strcmp_fn,
+                            &[l_ptr.into(), r_ptr.into()],
+                            "strcmp_res",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let cmp_val = cmp_call
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_int_value();
+                    let zero = self.context.i32_type().const_int(0, false);
+                    let pred = if *op == BinaryOp::Eq {
+                        inkwell::IntPredicate::EQ
+                    } else {
+                        inkwell::IntPredicate::NE
+                    };
+                    let res = self
+                        .builder
+                        .build_int_compare(pred, cmp_val, zero, "str_eq")
+                        .unwrap();
+                    return Ok(res.into());
+                }
+
                 let is_cmp = matches!(
                     op,
                     BinaryOp::Eq
@@ -169,22 +222,66 @@ impl<'ctx> CodeGen<'ctx> {
                 // Pointer instance methods: read, write, offset, address, isNull, cast, toString
                 if method == "read" && args.is_empty() {
                     let recv_val = self.eval_atom(receiver)?;
-                    if recv_val.is_pointer_value() {
-                        let ptr = recv_val.into_pointer_value();
-                        let load_ty = self.type_lowerer.llvm_type(ty);
-                        let loaded = self.builder.build_load(load_ty, ptr, "ptr_read").unwrap();
-                        return Ok(loaded);
-                    }
+                    let recv_ty = self.get_atom_type(receiver);
+                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                    let ptr = if recv_val.is_pointer_value() {
+                        recv_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "read_ptr")
+                            .unwrap()
+                    };
+                    let inner_ty = recv_ty.as_ref().and_then(|t| t.unwrap_pointer());
+                    let load_ty = if let Some(inner) = inner_ty {
+                        self.type_lowerer.llvm_type(inner)
+                    } else {
+                        self.type_lowerer.llvm_type(ty)
+                    };
+                    let loaded = self.builder.build_load(load_ty, ptr, "ptr_read").unwrap();
+                    return Ok(loaded);
                 }
 
                 if method == "write" && args.len() == 1 {
                     let recv_val = self.eval_atom(receiver)?;
-                    if recv_val.is_pointer_value() {
-                        let ptr = recv_val.into_pointer_value();
-                        let val_to_write = self.eval_atom(&args[0])?;
-                        let _ = self.builder.build_store(ptr, val_to_write);
-                        return Ok(self.context.i8_type().const_int(0, false).into());
-                    }
+                    let recv_ty = self.get_atom_type(receiver);
+                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
+                    let ptr = if recv_val.is_pointer_value() {
+                        recv_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "write_ptr")
+                            .unwrap()
+                    };
+                    let val_to_write = self.eval_atom(&args[0])?;
+                    let inner_ty = recv_ty.as_ref().and_then(|t| t.unwrap_pointer());
+                    let val_cast = if let Some(inner) = inner_ty {
+                        let target_llvm_ty = self.type_lowerer.llvm_type(inner);
+                        if target_llvm_ty.is_int_type() && val_to_write.is_int_value() {
+                            let target_int_ty = target_llvm_ty.into_int_type();
+                            let val_int = val_to_write.into_int_value();
+                            if val_int.get_type().get_bit_width() > target_int_ty.get_bit_width() {
+                                self.builder
+                                    .build_int_truncate(val_int, target_int_ty, "trunc_val")
+                                    .unwrap()
+                                    .into()
+                            } else if val_int.get_type().get_bit_width()
+                                < target_int_ty.get_bit_width()
+                            {
+                                self.builder
+                                    .build_int_z_extend(val_int, target_int_ty, "zext_val")
+                                    .unwrap()
+                                    .into()
+                            } else {
+                                val_to_write
+                            }
+                        } else {
+                            val_to_write
+                        }
+                    } else {
+                        val_to_write
+                    };
+                    let _ = self.builder.build_store(ptr, val_cast);
+                    return Ok(self.context.i8_type().const_int(0, false).into());
                 }
 
                 if method == "offset" && args.len() == 1 {
@@ -285,6 +382,54 @@ impl<'ctx> CodeGen<'ctx> {
                     let recv_val = self.eval_atom(receiver)?;
                     if recv_val.is_pointer_value() {
                         return Ok(recv_val);
+                    }
+                }
+
+                if method == "length" && args.is_empty() {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let is_arr = recv_ty.as_ref().map(|t| t.is_array()).unwrap_or(false);
+                    let is_str = recv_ty.as_ref().map(|t| t.is_string()).unwrap_or(false);
+                    if is_arr || (!is_str && recv_ty.is_none()) {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "arr_ptr")
+                                .unwrap()
+                        };
+                        let len_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i64_type(),
+                                    ptr,
+                                    &[self.context.i64_type().const_int(1, false)],
+                                    "arr_len_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let len_val = self
+                            .builder
+                            .build_load(self.context.i64_type(), len_ptr, "arr_len")
+                            .unwrap();
+                        return Ok(len_val);
+                    }
+                    if is_str {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "str_ptr")
+                                .unwrap()
+                        };
+                        let len_call = self
+                            .builder
+                            .build_call(self.runtime.strlen_fn, &[ptr.into()], "str_len")
+                            .unwrap();
+                        return Ok(len_call.try_as_basic_value().basic().unwrap());
                     }
                 }
 
@@ -970,8 +1115,232 @@ impl<'ctx> CodeGen<'ctx> {
                 Ok(phi.as_basic_value())
             }
 
+            AnfExpr::Match { scrutinee, arms } => {
+                let cur_fn = self.current_fn.unwrap();
+                let merge_bb = self.context.append_basic_block(cur_fn, "match_expr_merge");
+                let llvm_ty = self.type_lowerer.llvm_type(ty);
+                let mut incoming = Vec::new();
+
+                self.compile_match_into_merge(scrutinee, arms, merge_bb, llvm_ty, &mut incoming)?;
+
+                self.builder.position_at_end(merge_bb);
+                if ty.is_void() || incoming.is_empty() {
+                    return Ok(self.context.i8_type().const_int(0, false).into());
+                }
+
+                let phi = self.builder.build_phi(llvm_ty, "match_expr_res").unwrap();
+                for (val, bb) in &incoming {
+                    phi.add_incoming(&[(val as &dyn inkwell::values::BasicValue<'ctx>, *bb)]);
+                }
+                Ok(phi.as_basic_value())
+            }
+
             _ => Ok(self.context.i64_type().const_int(0, false).into()),
         }
+    }
+
+    pub(crate) fn compile_match_into_merge(
+        &mut self,
+        scrutinee: &Atom,
+        arms: &[AnfMatchArm],
+        merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+        target_ty: inkwell::types::BasicTypeEnum<'ctx>,
+        incoming: &mut Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)>,
+    ) -> Result<(), String> {
+        let sc_val = self.eval_atom(scrutinee)?;
+        let cur_fn = self.current_fn.unwrap();
+
+        for (i, arm) in arms.iter().enumerate() {
+            let is_last = i == arms.len() - 1;
+            let arm_bb = self
+                .context
+                .append_basic_block(cur_fn, &format!("match_arm_{i}"));
+            let next_bb = if !is_last {
+                Some(
+                    self.context
+                        .append_basic_block(cur_fn, &format!("match_next_{i}")),
+                )
+            } else {
+                None
+            };
+
+            match &arm.pattern {
+                crate::desugar::DesugaredPattern::Wildcard
+                | crate::desugar::DesugaredPattern::Ident(_) => {
+                    let _ = self.builder.build_unconditional_branch(arm_bb);
+                }
+                crate::desugar::DesugaredPattern::Literal(lit) => {
+                    let lit_atom = Atom::Literal(lit.clone());
+                    let lit_val = self.eval_atom(&lit_atom)?;
+                    let eq_val = self.compile_binary_op(BinaryOp::Eq, sc_val, lit_val)?;
+                    let cond_i1 = self
+                        .coerce_to_type(eq_val, self.context.bool_type().into())?
+                        .into_int_value();
+                    let target_next = next_bb.unwrap_or(arm_bb);
+                    let _ = self
+                        .builder
+                        .build_conditional_branch(cond_i1, arm_bb, target_next);
+                }
+                crate::desugar::DesugaredPattern::Variant { variant, .. } => {
+                    let sc_ptr = if sc_val.is_pointer_value() {
+                        sc_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(
+                                sc_val.into_int_value(),
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "sc_ptr",
+                            )
+                            .unwrap()
+                    };
+                    let tag_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i64_type(),
+                                sc_ptr,
+                                &[self.context.i64_type().const_int(1, false)],
+                                "tag_ptr",
+                            )
+                            .unwrap()
+                    };
+                    let tag = self
+                        .builder
+                        .build_load(self.context.i64_type(), tag_ptr, "tag")
+                        .unwrap()
+                        .into_int_value();
+                    let exp_tag_val =
+                        if variant == "Ok" || variant == "Some" || variant == "CircleShape" {
+                            0
+                        } else if variant == "Err" || variant == "None" || variant == "RectShape" {
+                            1
+                        } else {
+                            2
+                        };
+                    let exp_tag = self.context.i64_type().const_int(exp_tag_val, false);
+                    let eq_tag = self
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::EQ, tag, exp_tag, "eq_tag")
+                        .unwrap();
+                    let target_next = next_bb.unwrap_or(arm_bb);
+                    let _ = self
+                        .builder
+                        .build_conditional_branch(eq_tag, arm_bb, target_next);
+                }
+                _ => {
+                    let _ = self.builder.build_unconditional_branch(arm_bb);
+                }
+            }
+
+            // Position in arm_bb and bind pattern variables
+            self.builder.position_at_end(arm_bb);
+            let sc_ty = self.get_atom_type(scrutinee);
+            match &arm.pattern {
+                crate::desugar::DesugaredPattern::Ident(name) => {
+                    self.variables.insert(name.clone(), sc_val);
+                    if let Some(t) = &sc_ty {
+                        self.var_types.insert(name.clone(), t.clone());
+                    }
+                }
+                crate::desugar::DesugaredPattern::Variant {
+                    variant, patterns, ..
+                } => {
+                    let sc_ptr = if sc_val.is_pointer_value() {
+                        sc_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(
+                                sc_val.into_int_value(),
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "sc_ptr",
+                            )
+                            .unwrap()
+                    };
+                    for (j, pat) in patterns.iter().enumerate() {
+                        if let crate::desugar::DesugaredPattern::Ident(v) = pat {
+                            let field_ptr = unsafe {
+                                self.builder
+                                    .build_gep(
+                                        self.context.i64_type(),
+                                        sc_ptr,
+                                        &[self.context.i64_type().const_int((2 + j) as u64, false)],
+                                        "payload_gep",
+                                    )
+                                    .unwrap()
+                            };
+                            let f_val = self
+                                .builder
+                                .build_load(self.context.i64_type(), field_ptr, "f_val")
+                                .unwrap();
+                            self.variables.insert(v.clone(), f_val);
+
+                            if let Some(Type::Named { name, args }) = &sc_ty {
+                                if name == "Result" {
+                                    if variant == "Ok" && !args.is_empty() {
+                                        self.var_types.insert(v.clone(), args[0].clone());
+                                    } else if variant == "Err" && args.len() > 1 {
+                                        self.var_types.insert(v.clone(), args[1].clone());
+                                    }
+                                } else if name == "Option" && variant == "Some" && !args.is_empty()
+                                {
+                                    self.var_types.insert(v.clone(), args[0].clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                crate::desugar::DesugaredPattern::Record(fields) => {
+                    let sc_ptr = if sc_val.is_pointer_value() {
+                        sc_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(
+                                sc_val.into_int_value(),
+                                self.context.ptr_type(inkwell::AddressSpace::default()),
+                                "sc_ptr",
+                            )
+                            .unwrap()
+                    };
+                    for (f_name, opt_pat) in fields {
+                        if let Some(crate::desugar::DesugaredPattern::Ident(v)) = opt_pat {
+                            let f_idx = self.get_field_index(scrutinee, f_name);
+                            let f_ptr = unsafe {
+                                self.builder
+                                    .build_gep(
+                                        self.context.i64_type(),
+                                        sc_ptr,
+                                        &[self.context.i64_type().const_int(f_idx as u64, false)],
+                                        "fld_ptr",
+                                    )
+                                    .unwrap()
+                            };
+                            let f_val = self
+                                .builder
+                                .build_load(self.context.i64_type(), f_ptr, "fld_val")
+                                .unwrap();
+                            self.variables.insert(v.clone(), f_val);
+
+                            if let Some(Type::Record(flds)) = &sc_ty
+                                && let Some((_, fty)) =
+                                    flds.iter().find(|(n, _)| n.as_str() == f_name.as_str())
+                            {
+                                self.var_types.insert(v.clone(), fty.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            // Compile arm body into merge_bb
+            self.compile_block_into_merge(&arm.body, merge_bb, target_ty, incoming)?;
+
+            // Continue to next arm from next_bb
+            if let Some(nb) = next_bb {
+                self.builder.position_at_end(nb);
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn compile_block_into_merge(
@@ -1037,11 +1406,8 @@ impl<'ctx> CodeGen<'ctx> {
                     incoming.push((def_val, cur_bb));
                 }
             }
-            _ => {
-                let cur_bb = self.builder.get_insert_block().unwrap();
-                let _ = self.builder.build_unconditional_branch(merge_bb);
-                let def_val = self.const_zero_for_type(target_ty);
-                incoming.push((def_val, cur_bb));
+            AnfTail::Match { scrutinee, arms } => {
+                self.compile_match_into_merge(scrutinee, arms, merge_bb, target_ty, incoming)?;
             }
         }
         Ok(())
@@ -1129,9 +1495,11 @@ impl<'ctx> CodeGen<'ctx> {
         }
         // Fallback default index
         match field {
-            "x" | "first" | "radius" | "host" | "value" | "code" => 1,
-            "y" | "second" | "w" | "port" | "message" => 2,
-            "z" | "h" | "tls" => 3,
+            "x" | "first" | "radius" | "host" | "value" | "code" | "fd" | "size" | "read" => 1,
+            "y" | "second" | "w" | "port" | "message" | "path" | "is_file" | "write" => 2,
+            "z" | "h" | "tls" | "is_dir" | "create" => 3,
+            "append" | "modified_at" => 4,
+            "truncate" => 5,
             _ => 1,
         }
     }

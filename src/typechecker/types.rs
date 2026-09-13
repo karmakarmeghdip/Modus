@@ -134,6 +134,10 @@ impl Type {
         matches!(self, Type::Named { name, args } if name == "IO" && args.len() == 1)
     }
 
+    pub fn is_array(&self) -> bool {
+        matches!(self, Type::Array(_))
+    }
+
     pub fn unwrap_io(&self) -> Option<&Type> {
         match self {
             Type::Named { name, args } if name == "IO" && args.len() == 1 => Some(&args[0]),

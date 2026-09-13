@@ -383,6 +383,35 @@ impl<'a> TypeInferrer<'a> {
                         _ => {}
                     }
                 }
+
+                if let Type::Array(_) = expanded_recv
+                    && method == "length"
+                {
+                    if !args.is_empty() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::ArgCountMismatch {
+                                expected: 0,
+                                found: args.len(),
+                            },
+                            Some(expr.span),
+                        ));
+                    }
+                    return Ok(Type::i64());
+                }
+
+                if expanded_recv.is_string() && method == "length" {
+                    if !args.is_empty() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::ArgCountMismatch {
+                                expected: 0,
+                                found: args.len(),
+                            },
+                            Some(expr.span),
+                        ));
+                    }
+                    return Ok(Type::i64());
+                }
+
                 let resolver = TraitResolver::new(self.env);
                 let method_sig = resolver.resolve_method(
                     &applied_ty,
@@ -697,7 +726,13 @@ impl<'a> TypeInferrer<'a> {
                     self.check_pattern(&arm.pattern, &target_ty)?;
 
                     let arm_ty = match &arm.body {
-                        MatchArmBody::Expr(b_expr) => self.synth_expr(b_expr)?,
+                        MatchArmBody::Expr(b_expr) => {
+                            if let Some(existing) = &common_body_ty {
+                                self.check_expr(b_expr, existing)?
+                            } else {
+                                self.synth_expr(b_expr)?
+                            }
+                        }
                         MatchArmBody::Block(b_stmts) => {
                             self.check_block_or_synth(b_stmts, common_body_ty.as_ref())?
                         }

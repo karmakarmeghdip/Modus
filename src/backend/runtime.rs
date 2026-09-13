@@ -29,6 +29,9 @@ pub struct Runtime<'ctx> {
     pub dec_ref_fn: FunctionValue<'ctx>,
     pub is_unique_fn: FunctionValue<'ctx>,
     pub str_concat_fn: FunctionValue<'ctx>,
+    pub strcmp_fn: FunctionValue<'ctx>,
+    pub fs_read_dir_fn: FunctionValue<'ctx>,
+    pub fs_rename_fn: FunctionValue<'ctx>,
 }
 
 impl<'ctx> Runtime<'ctx> {
@@ -105,6 +108,41 @@ impl<'ctx> Runtime<'ctx> {
             Self::build_str_concat_fn(context, module, malloc_fn, strlen_fn, memcpy_fn)
         });
 
+        // 13. extern int strcmp(const char* s1, const char* s2);
+        let strcmp_fn = module.get_function("strcmp").unwrap_or_else(|| {
+            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
+            module.add_function("strcmp", fn_type, None)
+        });
+
+        // 14. Build helper: modus_fs_read_dir(path: ptr) -> ptr
+        let fs_read_dir_fn = module
+            .get_function("modus_fs_read_dir")
+            .unwrap_or_else(|| Self::build_fs_read_dir_fn(context, module, alloc_fn, strcmp_fn));
+
+        // 15. Build helper: modus_fs_rename(old: ptr, new: ptr) -> i32
+        let rename_libc_fn = module.get_function("rename").unwrap_or_else(|| {
+            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
+            module.add_function("rename", fn_type, None)
+        });
+        let fs_rename_fn = module.get_function("modus_fs_rename").unwrap_or_else(|| {
+            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
+            let func = module.add_function("modus_fs_rename", fn_type, None);
+            let b = context.create_builder();
+            let bb = context.append_basic_block(func, "entry");
+            b.position_at_end(bb);
+            let p1 = func.get_nth_param(0).unwrap();
+            let p2 = func.get_nth_param(1).unwrap();
+            let res = b
+                .build_call(rename_libc_fn, &[p1.into(), p2.into()], "call_rename")
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value();
+            let _ = b.build_return(Some(&res));
+            func
+        });
+
         Self {
             context,
             malloc_fn,
@@ -119,6 +157,9 @@ impl<'ctx> Runtime<'ctx> {
             dec_ref_fn,
             is_unique_fn,
             str_concat_fn,
+            strcmp_fn,
+            fs_read_dir_fn,
+            fs_rename_fn,
         }
     }
 
@@ -399,6 +440,413 @@ impl<'ctx> Runtime<'ctx> {
         let _ = builder.build_store(null_pos, context.i8_type().const_int(0, false));
 
         let _ = builder.build_return(Some(&buf));
+        func
+    }
+
+    /// Emits `modus_fs_read_dir(path: ptr) -> ptr`:
+    /// Reads directory entries excluding "." and "..", constructs and returns a Modus Array of Strings:
+    /// `{ i64 rc = 1, i64 len, i64 cap, ptr reserved, [ptr s0, ptr s1, ...] }`.
+    fn build_fs_read_dir_fn(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        alloc_fn: FunctionValue<'ctx>,
+        strcmp_fn: FunctionValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let i8_ptr = context.ptr_type(AddressSpace::default());
+        let i64_type = context.i64_type();
+        let i32_type = context.i32_type();
+        let i8_type = context.i8_type();
+
+        let opendir_fn = module.get_function("opendir").unwrap_or_else(|| {
+            let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
+            module.add_function("opendir", fn_type, None)
+        });
+
+        let readdir_fn = module.get_function("readdir").unwrap_or_else(|| {
+            let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
+            module.add_function("readdir", fn_type, None)
+        });
+
+        let closedir_fn = module.get_function("closedir").unwrap_or_else(|| {
+            let fn_type = i32_type.fn_type(&[i8_ptr.into()], false);
+            module.add_function("closedir", fn_type, None)
+        });
+
+        let strdup_fn = module.get_function("strdup").unwrap_or_else(|| {
+            let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
+            module.add_function("strdup", fn_type, None)
+        });
+
+        let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
+        let func = module.add_function("modus_fs_read_dir", fn_type, None);
+
+        let builder = context.create_builder();
+
+        let entry_bb = context.append_basic_block(func, "entry");
+        let empty_ret_bb = context.append_basic_block(func, "empty_ret");
+        let count_loop_bb = context.append_basic_block(func, "count_loop");
+        let count_check_bb = context.append_basic_block(func, "count_check");
+        let count_inc_bb = context.append_basic_block(func, "count_inc");
+        let count_done_bb = context.append_basic_block(func, "count_done");
+        let open_second_bb = context.append_basic_block(func, "open_second");
+        let fill_loop_bb = context.append_basic_block(func, "fill_loop");
+        let fill_check_bb = context.append_basic_block(func, "fill_check");
+        let fill_store_bb = context.append_basic_block(func, "fill_store");
+        let fill_done_bb = context.append_basic_block(func, "fill_done");
+        let ret_arr_bb = context.append_basic_block(func, "ret_arr");
+
+        // Entry block
+        builder.position_at_end(entry_bb);
+        let path_arg = func.get_first_param().unwrap().into_pointer_value();
+
+        // Global constant strings for "." and ".."
+        let dot_str = builder
+            .build_global_string_ptr(".", "dot")
+            .unwrap()
+            .as_basic_value_enum();
+        let dotdot_str = builder
+            .build_global_string_ptr("..", "dotdot")
+            .unwrap()
+            .as_basic_value_enum();
+
+        let count_alloca = builder.build_alloca(i64_type, "count").unwrap();
+        let _ = builder.build_store(count_alloca, i64_type.const_int(0, false));
+        let idx_alloca = builder.build_alloca(i64_type, "idx").unwrap();
+        let _ = builder.build_store(idx_alloca, i64_type.const_int(0, false));
+        let arr_alloca = builder.build_alloca(i8_ptr, "arr_alloca").unwrap();
+
+        let dir1_call = builder
+            .build_call(opendir_fn, &[path_arg.into()], "dir1")
+            .unwrap();
+        let dir1_ptr = dir1_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let dir1_int = builder
+            .build_ptr_to_int(dir1_ptr, i64_type, "dir1_int")
+            .unwrap();
+        let is_dir1_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                dir1_int,
+                i64_type.const_int(0, false),
+                "is_dir1_null",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_dir1_null, empty_ret_bb, count_loop_bb);
+
+        // empty_ret block
+        builder.position_at_end(empty_ret_bb);
+        let empty_alloc = builder
+            .build_call(
+                alloc_fn,
+                &[i64_type.const_int(32, false).into()],
+                "empty_arr",
+            )
+            .unwrap();
+        let empty_ptr = empty_alloc
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        unsafe {
+            let p1 = builder
+                .build_gep(i64_type, empty_ptr, &[i64_type.const_int(1, false)], "p1")
+                .unwrap();
+            let _ = builder.build_store(p1, i64_type.const_int(0, false));
+            let p2 = builder
+                .build_gep(i64_type, empty_ptr, &[i64_type.const_int(2, false)], "p2")
+                .unwrap();
+            let _ = builder.build_store(p2, i64_type.const_int(0, false));
+            let p3 = builder
+                .build_gep(i64_type, empty_ptr, &[i64_type.const_int(3, false)], "p3")
+                .unwrap();
+            let _ = builder.build_store(p3, i64_type.const_int(0, false));
+        }
+        let _ = builder.build_return(Some(&empty_ptr));
+
+        // count_loop block
+        builder.position_at_end(count_loop_bb);
+        let de1_call = builder
+            .build_call(readdir_fn, &[dir1_ptr.into()], "de1")
+            .unwrap();
+        let de1_ptr = de1_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let de1_int = builder
+            .build_ptr_to_int(de1_ptr, i64_type, "de1_int")
+            .unwrap();
+        let is_de1_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                de1_int,
+                i64_type.const_int(0, false),
+                "is_de1_null",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_de1_null, count_done_bb, count_check_bb);
+
+        // count_check block
+        builder.position_at_end(count_check_bb);
+        let d_name1 = unsafe {
+            builder
+                .build_gep(
+                    i8_type,
+                    de1_ptr,
+                    &[i64_type.const_int(19, false)],
+                    "d_name1",
+                )
+                .unwrap()
+        };
+        let cmp_dot1 = builder
+            .build_call(strcmp_fn, &[d_name1.into(), dot_str.into()], "cmp_dot1")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let is_dot1 = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                cmp_dot1,
+                i32_type.const_int(0, false),
+                "is_dot1",
+            )
+            .unwrap();
+
+        let cmp_dotdot1 = builder
+            .build_call(
+                strcmp_fn,
+                &[d_name1.into(), dotdot_str.into()],
+                "cmp_dotdot1",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let is_dotdot1 = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                cmp_dotdot1,
+                i32_type.const_int(0, false),
+                "is_dotdot1",
+            )
+            .unwrap();
+
+        let is_skip1 = builder.build_or(is_dot1, is_dotdot1, "is_skip1").unwrap();
+        let _ = builder.build_conditional_branch(is_skip1, count_loop_bb, count_inc_bb);
+
+        // count_inc block
+        builder.position_at_end(count_inc_bb);
+        let c = builder
+            .build_load(i64_type, count_alloca, "c")
+            .unwrap()
+            .into_int_value();
+        let c_next = builder
+            .build_int_add(c, i64_type.const_int(1, false), "c_next")
+            .unwrap();
+        let _ = builder.build_store(count_alloca, c_next);
+        let _ = builder.build_unconditional_branch(count_loop_bb);
+
+        // count_done block
+        builder.position_at_end(count_done_bb);
+        let _ = builder.build_call(closedir_fn, &[dir1_ptr.into()], "");
+        let total_count = builder
+            .build_load(i64_type, count_alloca, "total_count")
+            .unwrap()
+            .into_int_value();
+        let four = i64_type.const_int(4, false);
+        let total_elems = builder
+            .build_int_add(total_count, four, "total_elems")
+            .unwrap();
+        let eight = i64_type.const_int(8, false);
+        let alloc_bytes = builder
+            .build_int_mul(total_elems, eight, "alloc_bytes")
+            .unwrap();
+        let arr_call = builder
+            .build_call(alloc_fn, &[alloc_bytes.into()], "arr")
+            .unwrap();
+        let arr_ptr = arr_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let _ = builder.build_store(arr_alloca, arr_ptr);
+
+        unsafe {
+            let p1 = builder
+                .build_gep(i64_type, arr_ptr, &[i64_type.const_int(1, false)], "p1")
+                .unwrap();
+            let _ = builder.build_store(p1, total_count);
+            let p2 = builder
+                .build_gep(i64_type, arr_ptr, &[i64_type.const_int(2, false)], "p2")
+                .unwrap();
+            let _ = builder.build_store(p2, total_count);
+            let p3 = builder
+                .build_gep(i64_type, arr_ptr, &[i64_type.const_int(3, false)], "p3")
+                .unwrap();
+            let _ = builder.build_store(p3, i64_type.const_int(0, false));
+        }
+
+        let has_elements = builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                total_count,
+                i64_type.const_int(0, false),
+                "has_elements",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(has_elements, open_second_bb, ret_arr_bb);
+
+        // open_second block
+        builder.position_at_end(open_second_bb);
+        let dir2_call = builder
+            .build_call(opendir_fn, &[path_arg.into()], "dir2")
+            .unwrap();
+        let dir2_ptr = dir2_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let dir2_int = builder
+            .build_ptr_to_int(dir2_ptr, i64_type, "dir2_int")
+            .unwrap();
+        let is_dir2_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                dir2_int,
+                i64_type.const_int(0, false),
+                "is_dir2_null",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_dir2_null, ret_arr_bb, fill_loop_bb);
+
+        // fill_loop block
+        builder.position_at_end(fill_loop_bb);
+        let de2_call = builder
+            .build_call(readdir_fn, &[dir2_ptr.into()], "de2")
+            .unwrap();
+        let de2_ptr = de2_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let de2_int = builder
+            .build_ptr_to_int(de2_ptr, i64_type, "de2_int")
+            .unwrap();
+        let is_de2_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                de2_int,
+                i64_type.const_int(0, false),
+                "is_de2_null",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_de2_null, fill_done_bb, fill_check_bb);
+
+        // fill_check block
+        builder.position_at_end(fill_check_bb);
+        let d_name2 = unsafe {
+            builder
+                .build_gep(
+                    i8_type,
+                    de2_ptr,
+                    &[i64_type.const_int(19, false)],
+                    "d_name2",
+                )
+                .unwrap()
+        };
+        let cmp_dot2 = builder
+            .build_call(strcmp_fn, &[d_name2.into(), dot_str.into()], "cmp_dot2")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let is_dot2 = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                cmp_dot2,
+                i32_type.const_int(0, false),
+                "is_dot2",
+            )
+            .unwrap();
+
+        let cmp_dotdot2 = builder
+            .build_call(
+                strcmp_fn,
+                &[d_name2.into(), dotdot_str.into()],
+                "cmp_dotdot2",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let is_dotdot2 = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                cmp_dotdot2,
+                i32_type.const_int(0, false),
+                "is_dotdot2",
+            )
+            .unwrap();
+
+        let is_skip2 = builder.build_or(is_dot2, is_dotdot2, "is_skip2").unwrap();
+        let _ = builder.build_conditional_branch(is_skip2, fill_loop_bb, fill_store_bb);
+
+        // fill_store block
+        builder.position_at_end(fill_store_bb);
+        let dup_call = builder
+            .build_call(strdup_fn, &[d_name2.into()], "dup_name")
+            .unwrap();
+        let dup_ptr = dup_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let curr_idx = builder
+            .build_load(i64_type, idx_alloca, "curr_idx")
+            .unwrap()
+            .into_int_value();
+        let slot_offset = builder
+            .build_int_add(curr_idx, i64_type.const_int(4, false), "slot_offset")
+            .unwrap();
+
+        let arr_val = builder
+            .build_load(i8_ptr, arr_alloca, "arr_val")
+            .unwrap()
+            .into_pointer_value();
+        let elem_slot = unsafe {
+            builder
+                .build_gep(i8_ptr, arr_val, &[slot_offset], "elem_slot")
+                .unwrap()
+        };
+        let _ = builder.build_store(elem_slot, dup_ptr);
+
+        let next_idx = builder
+            .build_int_add(curr_idx, i64_type.const_int(1, false), "next_idx")
+            .unwrap();
+        let _ = builder.build_store(idx_alloca, next_idx);
+        let _ = builder.build_unconditional_branch(fill_loop_bb);
+
+        // fill_done block
+        builder.position_at_end(fill_done_bb);
+        let _ = builder.build_call(closedir_fn, &[dir2_ptr.into()], "");
+        let _ = builder.build_unconditional_branch(ret_arr_bb);
+
+        // ret_arr block
+        builder.position_at_end(ret_arr_bb);
+        let final_arr = builder
+            .build_load(i8_ptr, arr_alloca, "final_arr")
+            .unwrap()
+            .into_pointer_value();
+        let _ = builder.build_return(Some(&final_arr));
+
         func
     }
 }

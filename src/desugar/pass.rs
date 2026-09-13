@@ -199,19 +199,34 @@ impl<'a> DesugarContext<'a> {
             match &stmt.node {
                 Stmt::Let {
                     name,
-                    ty: _,
+                    ty,
                     initializer,
                 } => {
+                    let declared_ty = if let Some(type_ann) = ty {
+                        let d_ty = self
+                            .inferrer
+                            .env
+                            .resolve_ast_type(&type_ann.node, &[], Some(type_ann.span))
+                            .ok();
+                        if let Some(ref d) = d_ty {
+                            let _ = self.inferrer.check_expr(initializer, d);
+                        }
+                        d_ty
+                    } else {
+                        None
+                    };
+
                     let desugared_init = self.desugar_expr(initializer);
-                    let var_ty = desugared_init.ty.clone();
+                    let var_ty = declared_ty.unwrap_or_else(|| desugared_init.ty.clone());
+                    let final_ty = self.inferrer.subst.apply(&var_ty);
                     let _ = self
                         .inferrer
                         .env
-                        .define_var(name.clone(), var_ty.clone(), stmt.span);
+                        .define_var(name.clone(), final_ty.clone(), stmt.span);
 
                     desugared.push(DesugaredStmt::Let {
                         name: name.clone(),
-                        ty: var_ty,
+                        ty: final_ty,
                         initializer: desugared_init,
                         span: stmt.span,
                     });
@@ -235,7 +250,8 @@ impl<'a> DesugarContext<'a> {
     }
 
     fn desugar_expr(&mut self, expr: &Spanned<ast::Expr>) -> DesugaredExpr {
-        let expr_ty = self.inferrer.synth_expr(expr).unwrap_or(Type::void());
+        let raw_ty = self.inferrer.synth_expr(expr).unwrap_or(Type::void());
+        let expr_ty = self.inferrer.subst.apply(&raw_ty);
 
         match &expr.node {
             ast::Expr::Literal(lit) => {
@@ -526,14 +542,18 @@ impl<'a> DesugarContext<'a> {
                 arms,
             } => {
                 let desugared_scrut = self.desugar_expr(scrutinee);
+                let target_ty = desugared_scrut.ty.clone();
                 let mut desugared_arms = Vec::new();
 
                 for arm in arms {
+                    self.inferrer.env.enter_scope();
+                    let _ = self.inferrer.check_pattern(&arm.pattern, &target_ty);
                     let pat = self.desugar_pattern(&arm.pattern);
                     let body = match &arm.body {
                         MatchArmBody::Expr(e) => vec![DesugaredStmt::Expr(self.desugar_expr(e))],
                         MatchArmBody::Block(stmts) => self.desugar_stmts(stmts),
                     };
+                    self.inferrer.env.exit_scope();
                     desugared_arms.push(DesugaredMatchArm { pattern: pat, body });
                 }
 

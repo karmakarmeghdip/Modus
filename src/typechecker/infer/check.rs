@@ -1,6 +1,6 @@
 //! Top-down bidirectional expression checking for Modus.
 
-use crate::ast::{self, ElseBranch, Expr, FunctionBody, Literal, Spanned, UnaryOp};
+use crate::ast::{self, ElseBranch, Expr, FunctionBody, Literal, MatchArmBody, Spanned, UnaryOp};
 use crate::typechecker::error::{TypeError, TypeErrorKind};
 use crate::typechecker::infer::TypeInferrer;
 use crate::typechecker::traits::TraitResolver;
@@ -182,6 +182,129 @@ impl<'a> TypeInferrer<'a> {
                 }
 
                 Ok(then_ty)
+            }
+
+            // Case 7b: Match expression checked against expected type
+            (
+                Expr::Match {
+                    expr: match_target,
+                    arms,
+                },
+                _,
+            ) => {
+                let target_ty = self.synth_expr(match_target)?;
+                for arm in arms {
+                    self.env.enter_scope();
+                    self.check_pattern(&arm.pattern, &target_ty)?;
+                    match &arm.body {
+                        MatchArmBody::Expr(b_expr) => {
+                            self.check_expr(b_expr, &expected)?;
+                        }
+                        MatchArmBody::Block(b_stmts) => {
+                            self.check_block(b_stmts, &expected)?;
+                        }
+                    }
+                    self.env.exit_scope();
+                }
+                Ok(self.subst.apply(&expected))
+            }
+
+            // Case 7c: MethodCall (or qualified constructor/function call) checked against expected type
+            (
+                Expr::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                },
+                _,
+            ) => {
+                if let Expr::Ident(type_name) = &receiver.node {
+                    let qualified = format!("{type_name}.{method}");
+                    if let Some(ctor) = self.env.constructors.get(&qualified).cloned() {
+                        let ctor_ty = self.instantiate_constructor(&ctor);
+                        if let Type::Function { params, ret } = ctor_ty {
+                            if params.len() != args.len() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: params.len(),
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            self.unify(&ret, &expected, Some(expr.span))?;
+                            for (arg, param_ty) in args.iter().zip(params.iter()) {
+                                let applied_param = self.subst.apply(param_ty);
+                                self.check_expr(arg, &applied_param)?;
+                            }
+                            return Ok(self.subst.apply(&expected));
+                        }
+                    }
+
+                    if let Some(sig) = self.env.lookup_function(&qualified).cloned() {
+                        let fn_ty = self.instantiate_function(&sig);
+                        if let Type::Function { params, ret } = fn_ty {
+                            if params.len() != args.len() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: params.len(),
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            if let Some(ctx) = &self.effect_ctx
+                                && ret.is_io()
+                                && !ctx.is_io
+                            {
+                                ctx.verify_call_allowed(&qualified, &ret, Some(expr.span))?;
+                            }
+                            self.unify(&ret, &expected, Some(expr.span))?;
+                            for (arg, param_ty) in args.iter().zip(params.iter()) {
+                                let applied_param = self.subst.apply(param_ty);
+                                self.check_expr(arg, &applied_param)?;
+                            }
+                            return Ok(self.subst.apply(&expected));
+                        }
+                    }
+                }
+
+                let synth_ty = self.synth_expr(expr)?;
+                self.unify(&synth_ty, &expected, Some(expr.span))?;
+                Ok(self.subst.apply(&expected))
+            }
+
+            // Case 7d: Call expression checked against expected type
+            (Expr::Call { callee, args }, _) => {
+                let callee_ty = self.synth_expr(callee)?;
+                let expanded_callee = self.subst.apply(&callee_ty);
+                if let Type::Function { params, ret } = expanded_callee {
+                    if params.len() != args.len() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::ArgCountMismatch {
+                                expected: params.len(),
+                                found: args.len(),
+                            },
+                            Some(expr.span),
+                        ));
+                    }
+                    if let Some(ctx) = &self.effect_ctx
+                        && ret.is_io()
+                        && !ctx.is_io
+                    {
+                        ctx.verify_call_allowed("<anonymous>", &ret, Some(expr.span))?;
+                    }
+                    self.unify(&ret, &expected, Some(expr.span))?;
+                    for (arg, param_ty) in args.iter().zip(params.iter()) {
+                        let applied_param = self.subst.apply(param_ty);
+                        self.check_expr(arg, &applied_param)?;
+                    }
+                    return Ok(self.subst.apply(&expected));
+                }
+
+                let synth_ty = self.synth_expr(expr)?;
+                self.unify(&synth_ty, &expected, Some(expr.span))?;
+                Ok(self.subst.apply(&expected))
             }
 
             // Case 8: Default bottom-up synthesis and unification

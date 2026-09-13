@@ -170,16 +170,18 @@ fn goto_symbol_in_imported_module(
 
     match resolved {
         ResolvedImport::Std(std_name) => {
-            if std_name == "std:io" {
-                let text = crate::modules::stdlib::STD_IO_SOURCE;
-                let line_index = LineIndex::new(text);
-                let prog = parse_program(text).ok()?;
-                let range = find_symbol_range_in_program(&prog, symbol, &line_index)?;
-                let uri = Url::parse("modus://std/io.mds").unwrap();
-                Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+            let (source_text, uri_str) = if std_name == "std:io" {
+                (crate::modules::stdlib::STD_IO_SOURCE, "modus://std/io.mds")
+            } else if std_name == "std:fs" {
+                (crate::modules::stdlib::STD_FS_SOURCE, "modus://std/fs.mds")
             } else {
-                None
-            }
+                return None;
+            };
+            let line_index = LineIndex::new(source_text);
+            let prog = parse_program(source_text).ok()?;
+            let range = find_symbol_range_in_program(&prog, symbol, &line_index)?;
+            let uri = Url::parse(uri_str).unwrap();
+            Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
         }
         ResolvedImport::File { path, url } => {
             let (text, line_index, program) = if let Some(store) = store

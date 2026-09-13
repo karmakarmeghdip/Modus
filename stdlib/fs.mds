@@ -1,0 +1,341 @@
+// Standard Filesystem Module for Modus (std:fs)
+
+export type IOError = {
+    code: i32,
+    message: String,
+};
+
+export type File = {
+    fd: i32,
+    path: String,
+};
+
+export type OpenOptions = {
+    read: bool,
+    write: bool,
+    create: bool,
+    append: bool,
+    truncate: bool,
+};
+
+export type FileMetadata = {
+    size: u64,
+    is_file: bool,
+    is_dir: bool,
+    modified_at: u64,
+};
+
+export function defaultOpenOptions(): OpenOptions => {
+    read: true,
+    write: false,
+    create: false,
+    append: false,
+    truncate: false,
+};
+
+export function readOptions(): OpenOptions => {
+    read: true,
+    write: false,
+    create: false,
+    append: false,
+    truncate: false,
+};
+
+export function writeOptions(): OpenOptions => {
+    read: false,
+    write: true,
+    create: true,
+    append: false,
+    truncate: true,
+};
+
+extern "C" {
+    function open(pathname: CString, flags: i32, mode: i32): IO(i32);
+    function close(fd: i32): IO(i32);
+    function read(fd: i32, buf: Pointer(u8), count: u64): IO(i64);
+    function write(fd: i32, buf: Pointer(u8), count: u64): IO(i64);
+    function lseek(fd: i32, offset: i64, whence: i32): IO(i64);
+    function unlink(pathname: CString): IO(i32);
+    function modus_fs_rename(oldpath: CString, newpath: CString): IO(i32);
+    function mkdir(pathname: CString, mode: i32): IO(i32);
+    function rmdir(pathname: CString): IO(i32);
+    function access(pathname: CString, mode: i32): IO(i32);
+    function stat(pathname: CString, buf: Pointer(u8)): IO(i32);
+    function modus_fs_read_dir(path: CString): IO([String]);
+    function strlen(s: CString): u64;
+    function malloc(size: u64): Pointer(u8);
+    function free(ptr: Pointer(void)): IO(void);
+}
+
+function i64_to_u64(n: i64): u64 {
+    let p: Pointer(void) = Pointer.fromAddress(n);
+    return p.address();
+}
+
+function read_loop(fd: i32, buf: Pointer(u8), total: i64, offset: i64): IO(Result(i64, IOError)) {
+    if (offset >= total) {
+        return Result.Ok(offset);
+    } else {
+        let remaining: u64 = i64_to_u64(total - offset);
+        let n: i64 = perform read(fd, buf.offset(offset), remaining);
+        if (n < 0) {
+            return Result.Err({ code: -1, message: "failed to read file content" });
+        } else if (n == 0) {
+            return Result.Ok(offset);
+        } else {
+            return read_loop(fd, buf, total, offset + n);
+        }
+    }
+}
+
+function write_loop(fd: i32, buf: Pointer(u8), total: u64, offset: u64): IO(Result(void, IOError)) {
+    if (offset >= total) {
+        return Result.Ok(());
+    } else {
+        let remaining: u64 = total - offset;
+        let n: i64 = perform write(fd, buf.offset(offset), remaining);
+        if (n <= 0) {
+            return Result.Err({ code: -1, message: "failed to write file content" });
+        } else {
+            let n_u64: u64 = i64_to_u64(n);
+            return write_loop(fd, buf, total, offset + n_u64);
+        }
+    }
+}
+
+function copy_loop(src_fd: i32, dest_fd: i32, buf: Pointer(u8), buf_size: u64, total_copied: u64): IO(Result(u64, IOError)) {
+    let n: i64 = perform read(src_fd, buf, buf_size);
+    if (n < 0) {
+        return Result.Err({ code: -1, message: "failed to read from source during copy" });
+    } else if (n == 0) {
+        return Result.Ok(total_copied);
+    } else {
+        let n_u64: u64 = i64_to_u64(n);
+        let write_res: Result(void, IOError) = perform write_loop(dest_fd, buf, n_u64, 0);
+        match (write_res) {
+            Result.Ok(_) => {
+                return copy_loop(src_fd, dest_fd, buf, buf_size, total_copied + n_u64);
+            },
+            Result.Err(e) => {
+                return Result.Err(e);
+            },
+        }
+    }
+}
+
+export function openFile(path: String, options: OpenOptions): IO(Result(File, IOError)) {
+    let access_flag: i32 = if (options.read && options.write) {
+        2
+    } else if (options.write) {
+        1
+    } else {
+        0
+    };
+
+    let create_flag: i32 = if (options.create) { 64 } else { 0 };
+    let trunc_flag: i32 = if (options.truncate) { 512 } else { 0 };
+    let append_flag: i32 = if (options.append) { 1024 } else { 0 };
+
+    let flags: i32 = access_flag + create_flag + trunc_flag + append_flag;
+    let fd: i32 = perform open(String.toCString(path), flags, 438);
+    if (fd < 0) {
+        return Result.Err({ code: fd, message: "failed to open file" });
+    } else {
+        let f: File = { fd: fd, path: path };
+        return Result.Ok(f);
+    }
+}
+
+export function closeFile(file: File): IO(Result(void, IOError)) {
+    let res: i32 = perform close(file.fd);
+    if (res < 0) {
+        return Result.Err({ code: res, message: "failed to close file" });
+    } else {
+        return Result.Ok(());
+    }
+}
+
+export function readFile(path: String): IO(Result(String, IOError)) {
+    let fd: i32 = perform open(String.toCString(path), 0, 0);
+    if (fd < 0) {
+        return Result.Err({ code: fd, message: "failed to open file for reading" });
+    } else {
+        let size: i64 = perform lseek(fd, 0, 2);
+        if (size < 0) {
+            perform close(fd);
+            return Result.Err({ code: -1, message: "failed to determine file size" });
+        } else {
+            perform lseek(fd, 0, 0);
+            let alloc_size: u64 = i64_to_u64(size + 1);
+            let buf: Pointer(u8) = malloc(alloc_size);
+            if (buf.isNull()) {
+                perform close(fd);
+                return Result.Err({ code: -1, message: "failed to allocate buffer for reading" });
+            } else {
+                let read_res: Result(i64, IOError) = perform read_loop(fd, buf, size, 0);
+                perform close(fd);
+                match (read_res) {
+                    Result.Ok(bytes_read) => {
+                        perform buf.offset(bytes_read).write(0);
+                        let s: String = perform buf.toString();
+                        return Result.Ok(s);
+                    },
+                    Result.Err(e) => {
+                        perform free(buf.cast());
+                        return Result.Err(e);
+                    },
+                }
+            }
+        }
+    }
+}
+
+export function writeFile(path: String, contents: String): IO(Result(void, IOError)) {
+    // flags: O_WRONLY (1) | O_CREAT (64) | O_TRUNC (512) = 577, mode: 0666 (438)
+    let fd: i32 = perform open(String.toCString(path), 577, 438);
+    if (fd < 0) {
+        return Result.Err({ code: fd, message: "failed to open file for writing" });
+    } else {
+        let cstr: CString = String.toCString(contents);
+        let len: u64 = strlen(cstr);
+        let write_res: Result(void, IOError) = perform write_loop(fd, cstr, len, 0);
+        perform close(fd);
+        return write_res;
+    }
+}
+
+export function appendFile(path: String, contents: String): IO(Result(void, IOError)) {
+    // flags: O_WRONLY (1) | O_CREAT (64) | O_APPEND (1024) = 1089, mode: 0666 (438)
+    let fd: i32 = perform open(String.toCString(path), 1089, 438);
+    if (fd < 0) {
+        return Result.Err({ code: fd, message: "failed to open file for appending" });
+    } else {
+        let cstr: CString = String.toCString(contents);
+        let len: u64 = strlen(cstr);
+        let write_res: Result(void, IOError) = perform write_loop(fd, cstr, len, 0);
+        perform close(fd);
+        return write_res;
+    }
+}
+
+export function removeFile(path: String): IO(Result(void, IOError)) {
+    let res: i32 = perform unlink(String.toCString(path));
+    if (res < 0) {
+        return Result.Err({ code: res, message: "failed to remove file" });
+    } else {
+        return Result.Ok(());
+    }
+}
+
+export function rename(old_path: String, new_path: String): IO(Result(void, IOError)) {
+    let res: i32 = perform modus_fs_rename(String.toCString(old_path), String.toCString(new_path));
+    if (res < 0) {
+        return Result.Err({ code: res, message: "failed to rename file or directory" });
+    } else {
+        return Result.Ok(());
+    }
+}
+
+export function copyFile(src: String, dest: String): IO(Result(u64, IOError)) {
+    let src_fd: i32 = perform open(String.toCString(src), 0, 0);
+    if (src_fd < 0) {
+        return Result.Err({ code: src_fd, message: "failed to open source file for copy" });
+    } else {
+        // O_WRONLY (1) | O_CREAT (64) | O_TRUNC (512) = 577, mode: 0666 (438)
+        let dest_fd: i32 = perform open(String.toCString(dest), 577, 438);
+        if (dest_fd < 0) {
+            perform close(src_fd);
+            return Result.Err({ code: dest_fd, message: "failed to open destination file for copy" });
+        } else {
+            let buf_size: u64 = 65536;
+            let buf: Pointer(u8) = malloc(buf_size);
+            if (buf.isNull()) {
+                perform close(src_fd);
+                perform close(dest_fd);
+                return Result.Err({ code: -1, message: "failed to allocate copy buffer" });
+            } else {
+                let res: Result(u64, IOError) = perform copy_loop(src_fd, dest_fd, buf, buf_size, 0);
+                perform close(src_fd);
+                perform close(dest_fd);
+                perform free(buf.cast());
+                return res;
+            }
+        }
+    }
+}
+
+export function createDir(path: String): IO(Result(void, IOError)) {
+    let res: i32 = perform mkdir(String.toCString(path), 511);
+    if (res < 0) {
+        return Result.Err({ code: res, message: "failed to create directory" });
+    } else {
+        return Result.Ok(());
+    }
+}
+
+export function removeDir(path: String): IO(Result(void, IOError)) {
+    let res: i32 = perform rmdir(String.toCString(path));
+    if (res < 0) {
+        return Result.Err({ code: res, message: "failed to remove directory" });
+    } else {
+        return Result.Ok(());
+    }
+}
+
+export function exists(path: String): IO(bool) {
+    let res: i32 = perform access(String.toCString(path), 0);
+    return IO.pure(res == 0);
+}
+
+export function metadata(path: String): IO(Result(FileMetadata, IOError)) {
+    let stat_buf: Pointer(u8) = malloc(144);
+    if (stat_buf.isNull()) {
+        return Result.Err({ code: -1, message: "failed to allocate memory for metadata" });
+    } else {
+        let res: i32 = perform stat(String.toCString(path), stat_buf);
+        if (res < 0) {
+            perform free(stat_buf.cast());
+            return Result.Err({ code: res, message: "failed to get file metadata" });
+        } else {
+            let mode_ptr: Pointer(u32) = stat_buf.offset(24).cast();
+            let st_mode: u32 = perform mode_ptr.read();
+
+            let size_ptr: Pointer(u64) = stat_buf.offset(48).cast();
+            let st_size: u64 = perform size_ptr.read();
+
+            let mtime_ptr: Pointer(u64) = stat_buf.offset(88).cast();
+            let st_mtime: u64 = perform mtime_ptr.read();
+
+            perform free(stat_buf.cast());
+
+            let file_type: u32 = (st_mode / 4096) % 16;
+            let is_file: bool = file_type == 8;
+            let is_dir: bool = file_type == 4;
+
+            let meta: FileMetadata = {
+                size: st_size,
+                is_file: is_file,
+                is_dir: is_dir,
+                modified_at: st_mtime,
+            };
+            return Result.Ok(meta);
+        }
+    }
+}
+
+export function readDir(path: String): IO(Result([String], IOError)) {
+    let meta_res: Result(FileMetadata, IOError) = perform metadata(path);
+    match (meta_res) {
+        Result.Ok(meta) => {
+            if (!meta.is_dir) {
+                return Result.Err({ code: -1, message: "path is not a directory" });
+            } else {
+                let entries: [String] = perform modus_fs_read_dir(String.toCString(path));
+                return Result.Ok(entries);
+            }
+        },
+        Result.Err(e) => {
+            return Result.Err(e);
+        },
+    }
+}

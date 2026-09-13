@@ -1,0 +1,301 @@
+# Modus Standard Library: Architecture & Roadmap
+
+This document specifies the architecture, implemented components, and forward-looking roadmap of the **Modus Standard Library (stdlib)**.
+
+---
+
+## 1. Design Principles
+
+1. **Pure by Default**:
+   - Functions with side effects must be wrapped in `IO(T)` and evaluated with `perform`.
+   - Pure computations (like string formatting, list manipulations, math functions) return values directly without effects.
+   - Dead pure computations returning `void` remain semantic errors.
+
+2. **Explicit Errors (No Exceptions)**:
+   - All fallible operations return `Result(T, E)`.
+   - Error handling is idiomatic using the `check` keyword and pattern matching.
+   - Consistent error types across domains (`IOError`, `ParseError`, etc.).
+
+3. **Perceus Reference Counting & FBIP**:
+   - All data structures leverage Functional-But-In-Place (FBIP) updates when reference count is unique (`rc == 1`), avoiding heap allocations on pure transformations.
+   - Memory management requires no Garbage Collector (GC) or runtime pause.
+
+4. **Zero-Overhead Abstractions**:
+   - Syntactic sugar (such as backtick string interpolation) is desugared at parse time into binary operations and trait calls with zero runtime dispatch cost.
+
+5. **Modular Delivery**:
+   - Built-in standard modules are embedded directly into the compiler and resolved via virtual imports (`import { ... } from "std:<module>";`).
+   - Extended packages and third-party libraries can be linked via the module resolution subsystem.
+
+6. **Compiler vs. Standard Library Decoupling (`rust-std` Architecture)**:
+   - The compiler's execution runtime (`runtime.rs`) must remain pure, minimal, and language-agnostic. Its sole responsibility is to provide foundational language primitives:
+     - Memory allocation and deallocation (`modus_alloc`, `free`)
+     - Perceus reference counting (`modus_inc_ref`, `modus_dec_ref`)
+     - Primitive memory layouts and headers (refcount, length, capacity for strings and arrays)
+     - Core string concatenation (`modus_str_concat`) and string equality (`modus_str_eq`)
+     - Panic, abort, and bounds-check traps
+   - Domain-specific logic (filesystem operations, environment inspection, process lifecycle, networking) must **never** be hardcoded into the compiler runtime. Instead, the standard library should be written in pure Modus code that interacts with the operating system via low-level `Pointer(T)` operations and thin libc `extern "C"` declarations.
+   - **Transitional Status**: Currently, a few specialized runtime helpers (such as `modus_fs_read_dir` and `modus_fs_rename` in `src/backend/runtime.rs`) bridge temporary gaps while Modus's pure FFI struct layout mechanisms and dynamic collection builders are being developed. In future phases, these helpers will be deprecated and eliminated from the compiler, decoupling standard library code entirely and shipping it separately as `modus-std` (akin to how `rustc` ships `rust-std`).
+
+---
+
+## 2. Currently Implemented Modules & Subsystems
+
+### 2.1 Low-Level C FFI Subsystem
+- **Direct C Interoperability**:
+  - `extern "C" { function name(...): Ret; }` and inline single-function `extern "C" function name(...): Ret;`.
+  - Purity checking distinguishes pure FFI calls (`extern "C" function strlen(s: CString): u64;`) from effectful FFI calls (`extern "C" function write(fd: i32, buf: CString, count: u64): IO(i64);`).
+- **Raw Memory & Pointer Primitives (`Pointer(T)`)**:
+  - `Pointer.null()`: Null pointer constructor.
+  - `Pointer.fromAddress(addr: u64)`: Address-to-pointer casting.
+  - `ptr.read(): IO(T)`: Dereference and read value.
+  - `ptr.write(val: T): IO(void)`: Write value to memory location.
+  - `ptr.offset(count: i64): Pointer(T)`: Pointer arithmetic.
+  - `ptr.address(): u64`: Pointer to integer address.
+  - `ptr.isNull(): bool`: Null check.
+  - `ptr.cast(): Pointer(U)`: Pointer reinterpretation.
+  - `ptr.toString(): IO(String)`: C-string dereference to Modus string.
+- **CString Interop**:
+  - Type alias: `type CString = Pointer(u8)`.
+  - `String.toCString(s: String): CString`: Zero-copy view of Modus string as C string.
+  - `CString.toString(cs: CString): IO(String)`: Safe read from null-terminated C buffer.
+
+### 2.2 String Conversion & Templating
+- **`Show` Trait**:
+  ```modus
+  trait Show(Self) {
+      function show(self: Self): String;
+  }
+  ```
+  - Built-in implementations for all 12 primitive types: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `String`.
+  - User-defined types can implement `Show`:
+    ```modus
+    impl Show for Point {
+        function show(self: Point): String {
+            return `Point(${self.x}, ${self.y})`;
+        }
+    }
+    ```
+- **String Concatenation**:
+  - Binary `+` on `String` operands is lowered to `modus_str_concat` with null-safe length calculation and single-allocation buffer copying.
+- **Backtick String Templating**:
+  - Syntax: `` `Hello, ${name}! Your score is ${score + 1}.` ``
+  - Desugared at parse time into binary `+` operations and `.show()` method calls:
+    `"Hello, " + (name).show() + "! Your score is " + (score + 1).show() + "."`
+  - Supports escaped expressions `\${expr}` to emit literal `${expr}` and escaped backticks `` \` ``.
+
+### 2.3 `std:io` Module
+- **Import Path**: `import { ... } from "std:io";`
+- **File Descriptors**:
+  - `stdin_fileno() -> 0`
+  - `stdout_fileno() -> 1`
+  - `stderr_fileno() -> 2`
+- **Types**:
+  - `type IOError = { code: i32, message: String };`
+- **Standard Printing**:
+  - `print(s: String): IO(void)`: Writes string to standard output.
+  - `println(s: String): IO(void)`: Writes string followed by newline to standard output.
+  - `eprint(s: String): IO(void)`: Writes string to standard error.
+  - `eprintln(s: String): IO(void)`: Writes string followed by newline to standard error.
+  - `flush(fd: i32): IO(void)`: Flushes file descriptor buffers.
+- **Low-Level Byte & Line Streaming**:
+  - `writeRaw(fd: i32, buf: CString, count: u64): IO(Result(u64, IOError))`
+  - `readRaw(fd: i32, buf: CString, count: u64): IO(Result(u64, IOError))`
+  - `readLine(): IO(Result(String, IOError))`: Reads newline-terminated line from standard input.
+  - `readLineFrom(fd: i32): IO(Result(String, IOError))`: Reads newline-terminated line from specified file descriptor.
+
+### 2.4 `std:fs` Module (Filesystem & Path Operations)
+- **Import Path**: `import { ... } from "std:fs";`
+- **Data Types**:
+  - `type IOError = { code: i32, message: String };`
+  - `type File = { fd: i32, path: String };`
+  - `type OpenOptions = { read: bool, write: bool, create: bool, append: bool, truncate: bool };`
+  - `type FileMetadata = { size: u64, is_file: bool, is_dir: bool, modified_at: u64 };`
+- **Option Constructors**:
+  - `defaultOpenOptions(): OpenOptions`: Read-only flags.
+  - `readOptions(): OpenOptions`: Explicit read-only mode.
+  - `writeOptions(): OpenOptions`: Write-only mode with create and truncate flags.
+- **File APIs**:
+  - `readFile(path: String): IO(Result(String, IOError))`: Reads entire file contents as a String.
+  - `writeFile(path: String, contents: String): IO(Result(void, IOError))`: Writes full string contents, creating or truncating.
+  - `appendFile(path: String, contents: String): IO(Result(void, IOError))`: Appends string to end of file, creating if nonexistent.
+  - `openFile(path: String, options: OpenOptions): IO(Result(File, IOError))`: Opens file with specified POSIX flags.
+  - `closeFile(file: File): IO(Result(void, IOError))`: Closes file handle.
+  - `removeFile(path: String): IO(Result(void, IOError))`: Unlinks file from filesystem.
+  - `copyFile(src: String, dest: String): IO(Result(u64, IOError))`: Copies data in 64KB chunks and returns total bytes copied.
+  - `rename(from: String, to: String): IO(Result(void, IOError))`: Atomic rename of file or directory.
+- **Directory APIs**:
+  - `createDir(path: String): IO(Result(void, IOError))`: Creates directory with standard permissions (0777).
+  - `removeDir(path: String): IO(Result(void, IOError))`: Removes empty directory.
+  - `readDir(path: String): IO(Result([String], IOError))`: Enumerates directory entries excluding `.` and `..`.
+- **Path & Metadata Utilities**:
+  - `exists(path: String): IO(bool)`: Tests whether path exists.
+  - `metadata(path: String): IO(Result(FileMetadata, IOError))`: Inspects file size, type (file vs directory), and modification timestamp.
+
+---
+
+## 3. Standard Library Roadmap: What to Build Next
+
+```mermaid
+flowchart TD
+    subgraph Foundation["1. Foundation & Core I/O (Completed)"]
+        FFI["Raw C FFI & Pointers"]
+        SHOW["Show Trait & String Templating"]
+        IO["std:io (Console & Descriptors)"]
+        FS["std:fs (Filesystem & Directory APIs)"]
+    end
+
+    subgraph Phase1b["Phase 1b: System Environment (Next)"]
+        ENV["std:env & std:process (Args, Env, Exit)"]
+    end
+
+    subgraph Phase2["Phase 2: Fundamental Utilities"]
+        STR["std:string (Pure String Manipulation)"]
+        MATH["std:math (Pure Math & Constants)"]
+        TIME["std:time (Durations, Sleep, Clocks)"]
+    end
+
+    subgraph Phase3["Phase 3: Data Structures & Networking"]
+        COLL["std:collections (Vector, Map, Set)"]
+        NET["std:net (Sockets & HTTP)"]
+    end
+
+    subgraph Phase4["Phase 4: Compiler Decoupling & modus-std"]
+        MIN_RT["Minimal Compiler Runtime (alloc, RC, headers only)"]
+        PURE_FFI["Pure Modus OS / libc / POSIX Bindings"]
+        STANDALONE["Standalone 'modus-std' Package & Distribution"]
+    end
+
+    Foundation --> Phase1b
+    Phase1b --> Phase2
+    Phase2 --> Phase3
+    Phase3 --> Phase4
+```
+
+---
+
+### Phase 1b: System Environment (Immediate Next Priority)
+
+#### `std:env` & `std:process` (Execution Environment)
+Allows CLI applications and tools to receive inputs, read configuration, and exit cleanly.
+- **Environment & CLI Arguments**:
+  - `args(): IO([String])`: Access command-line arguments.
+  - `getEnv(key: String): IO(Option(String))`: Retrieve environment variable.
+  - `setEnv(key: String, value: String): IO(Result(void, IOError))`: Set environment variable.
+  - `currentDir(): IO(Result(String, IOError))`: Get working directory.
+  - `setCurrentDir(path: String): IO(Result(void, IOError))`: Change working directory.
+- **Process Lifecycle**:
+  - `exit(code: i32): IO(void)`: Terminate process with exit code.
+  - `pid(): IO(i32)`: Current process ID.
+
+---
+
+### Phase 2: Fundamental Pure Utilities
+
+#### 3. `std:string` (String Algorithms & Parsing)
+Pure functional functions for manipulating text:
+- `length(s: String): i64` / `s.length(): i64`
+- `trim(s: String): String`
+- `split(s: String, delimiter: String): [String]`
+- `join(parts: [String], delimiter: String): String`
+- `startsWith(s: String, prefix: String): bool`
+- `endsWith(s: String, suffix: String): bool`
+- `contains(s: String, substr: String): bool`
+- `replace(s: String, from: String, to: String): String`
+- `substring(s: String, start: i64, length: i64): String`
+- `parseInt(s: String): Result(i64, String)`
+- `parseFloat(s: String): Result(f64, String)`
+
+#### 4. `std:math` (Pure Mathematics)
+Mathematical operations and floating-point constants:
+- Constants: `PI: f64 = 3.141592653589793`, `E: f64 = 2.718281828459045`
+- Functions: `abs`, `min`, `max`, `sqrt`, `pow`, `exp`, `ln`, `log10`
+- Trigonometry: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
+- Rounding: `floor`, `ceil`, `round`, `trunc`
+
+#### 5. `std:time` (Time & Duration)
+- `now(): IO(u64)`: Epoch timestamp in milliseconds.
+- `nowNanos(): IO(u64)`: High-precision epoch timestamp in nanoseconds.
+- `sleep(millis: u64): IO(void)`: Sleep for specified duration.
+- `type Duration = { nanos: u64 };`
+- `type Instant = { nanos: u64 };`
+
+---
+
+### Phase 3: Collections & Networking
+
+#### 6. `std:collections` (Functional Data Structures)
+- Functional Array/List utilities: `map`, `filter`, `fold`, `find`, `any`, `all`, `zip`, `reverse`, `sort`.
+- `Map(K, V)`: Immutable key-value map with FBIP update optimizations.
+- `Set(T)`: Immutable set implementation.
+
+#### 7. `std:net` (Networking & Sockets)
+- TCP streams and listeners (`TcpListener`, `TcpStream`).
+- UDP sockets (`UdpSocket`).
+- Basic HTTP client primitives (`fetch(url: String): IO(Result(HttpResponse, NetworkError))`).
+
+---
+
+### Phase 4: Compiler Decoupling & `modus-std` Architecture
+
+#### 8. Vision: The `rustc` / `rust-std` Separation Model
+In mature systems compilers such as Rust (`rustc`), the compiler itself maintains a strict boundary from standard libraries:
+- `rustc` compiles code and provides minimal internal runtime symbols (`rust_begin_panic`, intrinsic memory operations, eh personality).
+- `rust-std` (along with `core` and `alloc`) is written in pure Rust with `extern "C"` blocks, distributed as precompiled artifacts or source, and linked cleanly against user code.
+
+Modus will follow this exact model. The compiler runtime (`src/backend/runtime.rs`) must be stripped of all domain-specific logic, leaving only a lean, language-essential kernel:
+- **What stays in the compiler runtime**:
+  - Memory allocation and deallocation (`modus_alloc`, `modus_free`).
+  - Perceus reference counting (`modus_inc_ref`, `modus_dec_ref`).
+  - Core header layouts (Perceus RC header `[rc: i64]`, string `[rc, len, cap, chars]`, array `[rc, len, cap, ptr, elements]`).
+  - Primitive string operations (`modus_str_concat`, `modus_str_eq`).
+  - Fatal panic / abort / array bounds-check handlers.
+- **What must be stripped out of the compiler**:
+  - `modus_fs_read_dir`, `modus_fs_rename`, and any future OS/subsystem helpers.
+  - POSIX directory handling, file descriptors, environment inspection, network sockets, process spawning.
+
+#### 9. Current Status & Transitional Helpers
+Currently, Modus relies on a small number of transitional helpers in `src/backend/runtime.rs`:
+- `modus_fs_read_dir`: Implemented in LLVM IR because:
+  1. Reading POSIX directories requires unpacking C's `struct dirent`, whose internal field offsets (e.g. `d_name`) vary across operating systems.
+  2. Modus currently lacks dynamic array buffer builders that can push items into a `[String]` array while maintaining Perceus RC invariants.
+- `modus_fs_rename`: Implemented as a runtime shim to wrap libc `rename`.
+
+These helpers were pragmatically necessary during early bootstrap to unlock high-level `std:fs` APIs, but are explicitly marked for retirement.
+
+#### 10. Decoupling Prerequisites
+To strip these helpers and move all standard library code to pure Modus, the following capabilities will be implemented:
+1. **Platform-Specific C Struct / Pointer Offsetting in Pure Modus**:
+   - Defining C-struct layouts or using pointer offset primitives: `dirent_ptr.offset(NAME_OFFSET).read()`.
+   - Cross-platform target constants (e.g. Linux vs macOS vs Windows struct offsets).
+2. **Dynamic Collection Builders (`ListBuilder(T)` / `ArrayBuilder(T)`)**:
+   - Pure Modus utility to accumulate elements into an expandable buffer before sealing it into an immutable, Perceus-managed `[T]`.
+3. **Pure Modus libc / POSIX Declarations**:
+   - Moving all `opendir`, `readdir`, `closedir`, `rename`, `stat`, and other POSIX declarations into `stdlib/` Modus files without compiler backend involvement.
+
+#### 11. Decoupling Milestones
+- **Milestone 4.1: Pure Modus POSIX Re-implementation**:
+  - Rewrite `readDir` and `rename` in `stdlib/fs.mds` using pure Modus pointer operations and libc calls.
+  - Remove `modus_fs_read_dir` and `modus_fs_rename` from `src/backend/runtime.rs`.
+- **Milestone 4.2: Strip `src/backend/runtime.rs` to Minimal Kernel**:
+  - Audit compiler runtime exports to verify zero OS-specific symbols remain.
+  - Support a minimal, dependency-free runtime suitable for bare-metal / embedded targets (`no_std`).
+- **Milestone 4.3: Standalone `modus-std` Packaging**:
+  - Decouple `stdlib/*.mds` into an independent package (`modus-std`) with its own versioning, tests, and build pipeline.
+  - The Modus compiler resolves `modus-std` via the standard module resolution pipeline (or a `--sysroot` flag) rather than hardcoding embedded strings inside the compiler binary.
+
+---
+
+## 4. Implementation Strategy: Next Phase (`std:env` & `std:process` and Decoupling Prep)
+
+1. **Pure FFI Implementation for Environment & Process**:
+   - Bind `getenv`, `setenv`, `getcwd`, `chdir`, `exit`, `getpid` directly via `extern "C"` declarations in `stdlib/env.mds` and `stdlib/process.mds`.
+   - Avoid introducing any new helper functions into `src/backend/runtime.rs`.
+2. **`args()` Vector Construction**:
+   - Read `argc` and `argv` (passed from entry point or via platform getters) using pointer arithmetic in pure Modus.
+3. **Virtual Module Registration**:
+   - Register `"std:env"` and `"std:process"` in `src/modules/stdlib.rs`.
+4. **Decoupling Validation**:
+   - Keep runtime shims minimal and prepare the foundation for Phase 4 compiler decoupling.
+5. **Testing**:
+   - Comprehensive test suite in `tests/stdlib_env_tests.rs` and `tests/stdlib_process_tests.rs` covering argument inspection, environment variables, working directory changes, and process metadata.

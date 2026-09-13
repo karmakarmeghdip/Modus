@@ -83,6 +83,7 @@ pub fn resolve_import(
 }
 
 static STD_IO_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
+static STD_FS_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
 
 /// Computes or retrieves the static ModuleInterface for `std:io`.
 pub fn get_std_io_interface() -> Result<ModuleInterface, String> {
@@ -99,6 +100,21 @@ pub fn get_std_io_interface() -> Result<ModuleInterface, String> {
         .clone()
 }
 
+/// Computes or retrieves the static ModuleInterface for `std:fs`.
+pub fn get_std_fs_interface() -> Result<ModuleInterface, String> {
+    STD_FS_INTERFACE
+        .get_or_init(|| {
+            let prog = parse_program(crate::modules::stdlib::STD_FS_SOURCE)
+                .map_err(|e| format!("Failed to parse std:fs: {e:?}"))?;
+            let mut env = Environment::new();
+            check_program_with_env(&prog, &mut env)
+                .map_err(|e| format!("Failed to typecheck std:fs: {e:?}"))?;
+            ModuleInterface::extract(ModuleId::new(PathBuf::from("std:fs")), &prog, &env, None)
+                .map_err(|e| format!("Failed to extract std:fs interface: {e:?}"))
+        })
+        .clone()
+}
+
 /// Loads or compiles the ModuleInterface for a resolved module.
 pub fn load_module_interface(
     resolved: &ResolvedImport,
@@ -109,6 +125,8 @@ pub fn load_module_interface(
         ResolvedImport::Std(std_name) => {
             if std_name == "std:io" {
                 get_std_io_interface()
+            } else if std_name == "std:fs" {
+                get_std_fs_interface()
             } else {
                 Err(format!("Unknown standard library module '{std_name}'"))
             }
