@@ -1,0 +1,85 @@
+// geometry_pipeline.mds
+// A complete Modus program demonstrating core syntax and language semantics.
+
+// 1. Structural records (no 'struct' keyword; typing inferred structurally)
+type Point = {
+    x: i32,
+    y: i32,
+};
+
+// 2. Discriminated unions with parenthesized generics (never '<>')
+type Option(T) = Some(T) | None;
+type Result(T, E) = Ok(T) | Err(E);
+
+// 3. C FFI: Declare foreign functions within typed IO effects
+extern "C" {
+    function printf(fmt: CString, val: i32): IO(i32);
+    function puts(s: CString): IO(i32);
+}
+
+// 4. Pure tail-recursive loop: guaranteed zero stack growth via LLVM 'musttail'
+// (Loops like 'while' and 'for' are syntax errors in Modus)
+function sum_range(n: i32, acc: i32): i32 {
+    if (n <= 0) {
+        return acc;
+    } else {
+        return sum_range(n - 1, acc + n);
+    }
+}
+
+// 5. Functional record update with FBIP (Functional-But-In-Place)
+// Reuses heap buffer in-place when reference count is unique (rc == 1)
+function move_point(p: Point, dx: i32, dy: i32): Point {
+    return { ...p, x: p.x + dx, y: p.y + dy };
+}
+
+// 6. Pattern matching over discriminated unions
+function validate_point(p: Point): Result(i32, String) {
+    if (p.x < 0 || p.y < 0) {
+        return Result.Err("Coordinates must be non-negative");
+    } else {
+        return Result.Ok(p.x + p.y);
+    }
+}
+
+function unwrap_result(res: Result(i32, String), fallback: i32): i32 {
+    return match (res) {
+        Ok(v) => v,
+        Err(_) => fallback,
+    };
+}
+
+function unwrap_or(opt: Option(i32), fallback: i32): i32 {
+    return match (opt) {
+        Some(val) => val,
+        None => fallback,
+    };
+}
+
+// 7. Program entry point: pure by default, returns IO(void)
+function main(): IO(void) {
+    // Immutable variable binding (no 'mut' keyword exists)
+    let origin: Point = { x: 10, y: 20 };
+
+    // Functional update with FBIP: mutates buffer in-place when rc == 1
+    let moved: Point = move_point(origin, 5, 15); // { x: 15, y: 35 }
+
+    // Validate point with Result and unwrap via pattern matching
+    let valid_coord: Result(i32, String) = validate_point(moved);
+    let pt_sum: i32 = unwrap_result(valid_coord, 0); // 50
+
+    // Tail-recursive loop (LLVM musttail optimization)
+    let series: i32 = sum_range(10, 0); // 55
+
+    // Discriminated union and pattern matching
+    let opt_multiplier: Option(i32) = Option.Some(2);
+    let mult: i32 = unwrap_or(opt_multiplier, 1); // 2
+
+    let total_score: i32 = (pt_sum + series) * mult; // (50 + 55) * 2 = 210
+
+    // Unboxed C FFI output via 'perform'
+    let msg: CString = String.toCString("Total Pipeline Result: %d\n");
+    perform printf(msg, total_score);
+
+    return IO.pure(());
+}
