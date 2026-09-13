@@ -1,21 +1,16 @@
 pub mod ast;
-#[cfg(feature = "llvm")]
 pub mod backend;
 pub mod desugar;
 pub mod ir;
-#[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod modules;
 pub mod parser;
 pub mod typechecker;
 
-#[cfg(feature = "llvm")]
 use backend::CodeGen;
-#[cfg(feature = "llvm")]
 use inkwell::context::Context;
 
 /// Compiles Modus source code through the complete compiler pipeline into an LLVM CodeGen instance.
-#[cfg(feature = "llvm")]
 pub fn compile_source<'ctx>(
     context: &'ctx Context,
     source: &str,

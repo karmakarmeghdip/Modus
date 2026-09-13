@@ -1,5 +1,3 @@
-#![cfg(feature = "llvm")]
-
 use modus::modules::{
     ModuleGraph, ModuleId, ResolveError, build_executable, jit_run_graph, resolve_module_path,
     stdlib::{STD_IO_SOURCE, is_std_module},

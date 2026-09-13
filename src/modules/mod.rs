@@ -4,7 +4,6 @@
 //! - Module resolution and path canonicalization ([`resolver`])
 //! - Dependency graph construction, cycle detection, and topological stratification ([`graph`])
 
-#[cfg(feature = "llvm")]
 pub mod builder;
 pub mod cache;
 pub mod graph;
@@ -13,7 +12,6 @@ pub mod mangling;
 pub mod resolver;
 pub mod stdlib;
 
-#[cfg(feature = "llvm")]
 pub use builder::{
     build_executable, build_shared_library, emit_export_map_header, jit_run_graph,
     jit_run_module_graph,

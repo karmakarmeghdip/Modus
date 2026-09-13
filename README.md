@@ -451,34 +451,53 @@ args = ["lsp"]
 
 ### Prerequisites
 
-Modus development is configured with [devenv](https://devenv.sh/) for reproducible environments:
+Modus requires LLVM 23 (with matching libraries such as `libffi`, `zlib`, `ncurses`, `libxml2`) and Rust. A reproducible development environment is pre-configured with [devenv](https://devenv.sh/):
 
 ```bash
-# Enter development shell with Rust, LLVM, and tools pre-configured:
+# Enter the devenv shell with Rust, LLVM 23, Tree-sitter, and dependencies pre-configured:
 devenv shell
 ```
 
-### Building the Compiler
+Alternatively, commands can be invoked directly through `devenv shell -- <command>` without entering an interactive subshell.
+
+### Unified Binary
+
+Modus compiles into a single, unified `modus` executable containing:
+- The native compiler and driver (`build`, `build --lib`, `emit-llvm`)
+- The fast JIT execution engine (`run`)
+- The Language Server Protocol engine (`lsp`)
+
+No feature flags or separate builds are needed.
+
+### Building & Testing
+
+Inside `devenv shell` (or prefixed with `devenv shell --`):
 
 ```bash
-# Build compiler binary
+# Build the unified debug binary (target/debug/modus)
 cargo build
 
-# Build with LLVM backend support
-cargo build --features llvm
+# Build an optimized release binary (target/release/modus)
+cargo build --release
 
-# Run compiler test suite
-cargo test --features llvm
+# Run the full test suite (parser, typechecker, Perceus RC, codegen, LSP)
+cargo test
 ```
 
 ### Running Checks
 
-Before submitting contributions, verify all tests and formatting pass:
+Before submitting contributions, verify all formatting, lints, and tests pass:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets --features llvm -- -D warnings
-cargo test --features llvm
+cargo clippy -- -D warnings
+cargo test
+```
+
+Or as a one-liner from your host shell:
+
+```bash
+devenv shell -- bash -c "cargo fmt --check && cargo clippy -- -D warnings && cargo test"
 ```
 
 ## Documentation & Spec
