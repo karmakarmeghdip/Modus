@@ -56,6 +56,7 @@ pub fn desugar_program(program: &Program, env: &Environment) -> DesugaredProgram
                 param_types: sig.params.iter().map(|(_, ty)| ty.clone()).collect(),
                 return_type: sig.return_type.clone(),
                 is_effectful: sig.is_effectful,
+                is_c_abi: sig.is_c_abi,
             });
         }
     }
@@ -89,24 +90,29 @@ impl<'a> DesugarContext<'a> {
     }
 
     fn desugar_function(&mut self, func: &FunctionDecl, span: ast::Span) -> DesugaredFunction {
+        let generic_names: Vec<String> = func.type_params.iter().map(|p| p.name.clone()).collect();
+        let old_generics = std::mem::replace(&mut self.inferrer.generics_in_scope, generic_names);
+
         let sig = if let Some(sig) = self.inferrer.env.lookup_function(&func.name).cloned() {
             sig
         } else {
-            let generic_names: Vec<String> =
-                func.type_params.iter().map(|p| p.name.clone()).collect();
             let mut params = Vec::new();
             for p in &func.params {
                 let p_ty = self
                     .inferrer
                     .env
-                    .resolve_ast_type(&p.ty.node, &generic_names, Some(p.ty.span))
+                    .resolve_ast_type(
+                        &p.ty.node,
+                        &self.inferrer.generics_in_scope,
+                        Some(p.ty.span),
+                    )
                     .unwrap_or(Type::void());
                 params.push((p.name.clone(), p_ty));
             }
             let return_type = if let Some(ret) = &func.return_type {
                 self.inferrer
                     .env
-                    .resolve_ast_type(&ret.node, &generic_names, Some(ret.span))
+                    .resolve_ast_type(&ret.node, &self.inferrer.generics_in_scope, Some(ret.span))
                     .unwrap_or(Type::void())
             } else {
                 Type::void()
@@ -120,6 +126,7 @@ impl<'a> DesugarContext<'a> {
                 is_effectful,
                 span,
                 symbol_name: None,
+                is_c_abi: false,
             }
         };
         let old_ret = self.enclosing_fn_ret_type.replace(sig.return_type.clone());
@@ -160,6 +167,7 @@ impl<'a> DesugarContext<'a> {
 
         self.inferrer.env.exit_scope();
         self.enclosing_fn_ret_type = old_ret;
+        self.inferrer.generics_in_scope = old_generics;
 
         DesugaredFunction {
             name: sig.symbol_name().to_string(),
@@ -206,7 +214,11 @@ impl<'a> DesugarContext<'a> {
                         let d_ty = self
                             .inferrer
                             .env
-                            .resolve_ast_type(&type_ann.node, &[], Some(type_ann.span))
+                            .resolve_ast_type(
+                                &type_ann.node,
+                                &self.inferrer.generics_in_scope,
+                                Some(type_ann.span),
+                            )
                             .ok();
                         if let Some(ref d) = d_ty {
                             let _ = self.inferrer.check_expr(initializer, d);
@@ -472,22 +484,48 @@ impl<'a> DesugarContext<'a> {
                 return_type: _,
                 body,
             } => {
+                let (fn_params, fn_ret) = match &expr_ty {
+                    Type::Function {
+                        params: p_types,
+                        ret,
+                    } => (Some(p_types.clone()), Some((**ret).clone())),
+                    _ => (None, None),
+                };
+
                 self.inferrer.env.enter_scope();
                 let mut desugared_params = Vec::new();
-                for p in params {
-                    let p_ty = self
+                for (i, p) in params.iter().enumerate() {
+                    let p_ty = if let Some(ref p_types) = fn_params
+                        && let Some(t) = p_types.get(i)
+                    {
+                        t.clone()
+                    } else if p.ty.node != ast::Type::Unit {
+                        self.inferrer
+                            .env
+                            .resolve_ast_type(
+                                &p.ty.node,
+                                &self.inferrer.generics_in_scope,
+                                Some(p.ty.span),
+                            )
+                            .unwrap_or(Type::void())
+                    } else {
+                        self.inferrer
+                            .env
+                            .lookup_var(&p.name)
+                            .map(|(t, _)| t.clone())
+                            .unwrap_or(Type::void())
+                    };
+                    let _ = self
                         .inferrer
                         .env
-                        .lookup_var(&p.name)
-                        .map(|(t, _)| t.clone())
-                        .unwrap_or(Type::void());
+                        .define_var(p.name.clone(), p_ty.clone(), p.ty.span);
                     desugared_params.push((p.name.clone(), p_ty));
                 }
 
                 let (closure_ret, desugared_body) = match body {
                     FunctionBody::Expr(e) => {
                         let desugared_e = self.desugar_expr(e);
-                        let ret_ty = desugared_e.ty.clone();
+                        let ret_ty = fn_ret.unwrap_or_else(|| desugared_e.ty.clone());
                         (
                             ret_ty,
                             vec![DesugaredStmt::Return(Some(desugared_e), e.span)],
@@ -495,7 +533,8 @@ impl<'a> DesugarContext<'a> {
                     }
                     FunctionBody::Block(stmts) => {
                         let b = self.desugar_stmts(stmts);
-                        (Type::void(), b)
+                        let ret_ty = fn_ret.unwrap_or(Type::void());
+                        (ret_ty, b)
                     }
                 };
                 self.inferrer.env.exit_scope();

@@ -53,6 +53,7 @@ pub fn lower_program(desugared: &DesugaredProgram) -> AnfProgram {
             param_types: e.param_types.clone(),
             return_type: e.return_type.clone(),
             is_effectful: e.is_effectful,
+            is_c_abi: e.is_c_abi,
         })
         .collect();
 
@@ -472,7 +473,7 @@ impl AnfLowerCtx {
                 return_type,
                 body,
             } => {
-                let block = self.lower_stmts_to_block(body, expr.span, false);
+                let block = self.lower_stmts_to_block(body, expr.span, true);
                 AnfExpr::Closure {
                     params: params.clone(),
                     return_type: return_type.clone(),

@@ -242,6 +242,7 @@ fn register_trait_decl(
                 is_effectful,
                 span: member.span,
                 symbol_name: None,
+                is_c_abi: false,
             },
         );
     }
@@ -271,13 +272,15 @@ fn register_impl_decl(
     let mut methods = HashMap::new();
 
     for m in &impl_decl.methods {
+        let method_generics: Vec<String> =
+            m.node.type_params.iter().map(|p| p.name.clone()).collect();
         let mut params = Vec::new();
         for p in &m.node.params {
-            let p_ty = env.resolve_ast_type(&p.ty.node, &[], Some(p.ty.span))?;
+            let p_ty = env.resolve_ast_type(&p.ty.node, &method_generics, Some(p.ty.span))?;
             params.push((p.name.clone(), p_ty));
         }
         let ret_ty = if let Some(ret) = &m.node.return_type {
-            env.resolve_ast_type(&ret.node, &[], Some(ret.span))?
+            env.resolve_ast_type(&ret.node, &method_generics, Some(ret.span))?
         } else {
             Type::void()
         };
@@ -293,6 +296,7 @@ fn register_impl_decl(
                 is_effectful,
                 span: m.span,
                 symbol_name: None,
+                is_c_abi: false,
             },
         );
     }
@@ -352,6 +356,7 @@ fn register_function_sig(
         is_effectful,
         span,
         symbol_name: None,
+        is_c_abi: false,
     };
 
     env.define_function(sig)?;
@@ -401,6 +406,7 @@ fn register_extern_sig(
         is_effectful,
         span,
         symbol_name: Some(func_decl.name.clone()),
+        is_c_abi: true,
     };
 
     env.define_function(sig)?;
@@ -412,6 +418,12 @@ fn check_function_body(env: &mut Environment, func_decl: &FunctionDecl) -> Resul
     let effect_ctx = EffectContext::new(func_decl.name.clone(), sig.return_type.clone(), sig.span)?;
 
     let mut inferrer = TypeInferrer::new(env, Some(effect_ctx));
+    let generic_names: Vec<String> = func_decl
+        .type_params
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    inferrer.set_generics_in_scope(generic_names);
 
     // Register generic bounds
     let mut bounds = HashMap::new();
@@ -475,20 +487,29 @@ fn check_function_body(env: &mut Environment, func_decl: &FunctionDecl) -> Resul
 
 fn check_impl_bodies(env: &mut Environment, impl_decl: &ImplDecl) -> Result<(), TypeError> {
     for method in &impl_decl.methods {
+        let generic_names: Vec<String> = method
+            .node
+            .type_params
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
         let ret_ty = if let Some(ret) = &method.node.return_type {
-            env.resolve_ast_type(&ret.node, &[], Some(ret.span))?
+            env.resolve_ast_type(&ret.node, &generic_names, Some(ret.span))?
         } else {
             Type::void()
         };
 
         let effect_ctx = EffectContext::new(method.node.name.clone(), ret_ty.clone(), method.span)?;
         let mut inferrer = TypeInferrer::new(env, Some(effect_ctx));
+        inferrer.set_generics_in_scope(generic_names);
 
         inferrer.env.enter_scope();
         for param in &method.node.params {
-            let p_ty = inferrer
-                .env
-                .resolve_ast_type(&param.ty.node, &[], Some(param.ty.span))?;
+            let p_ty = inferrer.env.resolve_ast_type(
+                &param.ty.node,
+                &inferrer.generics_in_scope,
+                Some(param.ty.span),
+            )?;
             inferrer
                 .env
                 .define_var(param.name.clone(), p_ty, method.span)?;

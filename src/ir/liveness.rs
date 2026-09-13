@@ -24,6 +24,9 @@ pub fn is_heap_type(ty: &Type) -> bool {
             if name == "IO" {
                 return args.first().map(is_heap_type).unwrap_or(false);
             }
+            if name.len() == 1 && name.chars().next().unwrap().is_ascii_uppercase() {
+                return false;
+            }
             true
         }
         Type::Array(_)
@@ -31,8 +34,8 @@ pub fn is_heap_type(ty: &Type) -> bool {
         | Type::Tuple(_)
         | Type::Function { .. }
         | Type::TraitObject(_) => true,
-        // Conservatively treat type variables and generic bounds as potential heap objects
-        Type::Var(_) | Type::GenericParam(_) => true,
+        // Generic parameters and type variables are unboxed 64-bit words; containers manage their own heap buffers
+        Type::Var(_) | Type::GenericParam(_) => false,
     }
 }
 

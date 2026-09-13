@@ -35,7 +35,7 @@ This document specifies the architecture, implemented components, and forward-lo
      - Core string concatenation (`modus_str_concat`) and string equality (`modus_str_eq`)
      - Panic, abort, and bounds-check traps
    - Domain-specific logic (filesystem operations, environment inspection, process lifecycle, networking) must **never** be hardcoded into the compiler runtime. Instead, the standard library should be written in pure Modus code that interacts with the operating system via low-level `Pointer(T)` operations and thin libc `extern "C"` declarations.
-   - **Transitional Status**: Currently, three specialized runtime helpers (`modus_fs_read_dir`, `modus_fs_rename`, and `modus_str_split` in `src/backend/runtime.rs`) bridge temporary gaps while Modus's pure FFI struct layout mechanisms and dynamic collection builders (`ArrayBuilder(T)`) are being developed. Pure string transformations (`toLowerCase`, `toUpperCase`, `fromCharCode`) and floating-point rounding (`fround` via `(x as f32) as f64`) are implemented 100% in pure Modus. In future phases, all remaining transitional helpers will be deprecated and eliminated from the compiler runtime, decoupling standard library code entirely and shipping it separately as `modus-std` (akin to how `rustc` ships `rust-std`).
+   - **Transitional Status**: Currently, only two specialized runtime helpers (`modus_fs_read_dir` and `modus_fs_rename` in `src/backend/runtime.rs`) bridge temporary gaps while Modus's pure FFI struct layout mechanisms are being finalized. Dynamic array building is now natively supported via the `ArrayBuilder(T)` Perceus FBIP primitive, and `split` in `std:string` is implemented in 100% pure Modus (`modus_str_split` has been completely eliminated from the compiler runtime). Pure string transformations (`toLowerCase`, `toUpperCase`, `fromCharCode`) and floating-point rounding (`fround` via `(x as f32) as f64`) are also implemented 100% in pure Modus. In upcoming milestones, the remaining two filesystem helpers will be decoupled, leaving `runtime.rs` as a strictly minimal, language-agnostic kernel.
 
 ---
 
@@ -155,6 +155,110 @@ This document specifies the architecture, implemented components, and forward-lo
   - `exit(code: i32): IO(void)`: Terminates process immediately with the specified exit code.
   - `abort(): IO(void)`: Aborts process abnormally.
 
+### 2.7 `std:string` Module (Pure String Algorithms & Parsing)
+- **Import Path**: `import { ... } from "std:string";`
+- **String Inspection & Character Access**:
+  - `length(s: String): i64`: Returns byte length of string.
+  - `isEmpty(s: String): bool`: Returns whether string is empty.
+  - `charAt(s: String, index: i64): String`: Character at given index.
+  - `charCodeAt(s: String, index: i64): i64`: Byte/ASCII code at index.
+  - `fromCharCode(code: i64): String`: Single-character string from code (100% pure Modus).
+- **Substrings & Slicing**:
+  - `substring(s: String, start: i64, end: i64): String`
+  - `slice(s: String, start: i64, end: i64): String`: Slice supporting negative indices.
+- **Search & Matching**:
+  - `indexOf(s: String, search: String): i64`
+  - `lastIndexOf(s: String, search: String): i64`
+  - `includes(s: String, search: String): bool`
+  - `startsWith(s: String, prefix: String): bool`
+  - `endsWith(s: String, suffix: String): bool`
+- **Transformations & Padding**:
+  - `toLowerCase(s: String): String` (100% pure Modus)
+  - `toUpperCase(s: String): String` (100% pure Modus)
+  - `trim(s: String): String`
+  - `trimStart(s: String): String`
+  - `trimEnd(s: String): String`
+  - `repeat(s: String, count: i64): String`
+  - `padStart(s: String, targetLen: i64, pad: String): String`
+  - `padEnd(s: String, targetLen: i64, pad: String): String`
+  - `replace(s: String, pattern: String, replacement: String): String`
+  - `replaceAll(s: String, pattern: String, replacement: String): String`
+- **Dynamic Splitting & Joining**:
+  - `split(s: String, delimiter: String): [String]`: Pure Modus string splitting using `ArrayBuilder(String)` (zero compiler runtime helpers).
+  - `join(arr: [String], delimiter: String): String`: Concatenates array of strings with delimiter.
+- **Parsing**:
+  - `parseInt(s: String): Result(i64, String)`: Parses signed integer with error reporting.
+  - `parseFloat(s: String): Result(f64, String)`: Parses floating-point number.
+
+### 2.8 `std:math` Module (Pure Mathematics & Trigonometry)
+- **Import Path**: `import { ... } from "std:math";`
+- **Mathematical Constants**:
+  - `PI: f64`, `E: f64`, `LN2: f64`, `LN10: f64`, `LOG2E: f64`, `LOG10E: f64`, `SQRT2: f64`, `SQRT1_2: f64`
+- **Rounding & Clamping**:
+  - `floor(x: f64): f64`, `ceil(x: f64): f64`, `round(x: f64): f64`, `trunc(x: f64): f64`
+  - `fround(x: f64): f64`: IEEE 754 32-bit float rounding via pure Modus `(x as f32) as f64`.
+  - `clamp(x: f64, lower: f64, upper: f64): f64`
+- **Powers, Roots & Logarithms**:
+  - `sqrt(x: f64): f64`, `cbrt(x: f64): f64`, `pow(base: f64, exp: f64): f64`, `hypot(x: f64, y: f64): f64`
+  - `exp(x: f64): f64`, `expm1(x: f64): f64`, `log(x: f64): f64`, `log2(x: f64): f64`, `log10(x: f64): f64`, `log1p(x: f64): f64`
+- **Trigonometry & Hyperbolic Functions**:
+  - `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
+  - `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`
+- **Bitwise & Integer Helpers**:
+  - `clz32(x: i32): i32`: Count leading zero bits.
+  - `imul(a: i32, b: i32): i32`: C-like 32-bit integer multiplication.
+- **Randomness**:
+  - `random(): IO(f64)`: Pseudo-random floating-point value in `[0.0, 1.0)`.
+
+### 2.9 `std:time` Module (Clocks, Instants & Durations)
+- **Import Path**: `import { ... } from "std:time";`
+- **Types**:
+  - `type Duration = { nanos: u64 };`
+  - `type Instant = { nanos: u64 };`
+- **Duration Constructors & Conversions**:
+  - `durationFromNanos(nanos: u64): Duration`
+  - `durationFromMicros(micros: u64): Duration`
+  - `durationFromMillis(millis: u64): Duration`
+  - `durationFromSecs(secs: u64): Duration`
+  - `durationToNanos(d: Duration): u64`, `durationToMillis(d: Duration): u64`, `durationToSecs(d: Duration): f64`
+- **Instant Operations**:
+  - `instantFromNanos(nanos: u64): Instant`
+  - `instantElapsed(i: Instant): IO(Duration)`
+  - `instantDiff(a: Instant, b: Instant): Duration`
+- **System Clocks & Sleep**:
+  - `nowNanos(): IO(u64)`: Monotonic epoch clock in nanoseconds.
+  - `nowMillis(): IO(u64)`: Monotonic epoch clock in milliseconds.
+  - `now(): IO(Instant)`: Current monotonic timestamp instant.
+  - `sleep(duration: Duration): IO(void)`: Suspends execution for specified duration.
+  - `sleepMillis(millis: u64): IO(void)`: Suspends execution for specified milliseconds.
+
+### 2.10 Dynamic Collection Builders & `std:collections` Module
+- **`ArrayBuilder(T)` Language Builtin**:
+  - Designed for pure-by-default collection construction with Perceus FBIP in-place mutation:
+    - `ArrayBuilder.new(): ArrayBuilder(T)`: Default capacity (8 slots).
+    - `ArrayBuilder.withCapacity(cap: i64): ArrayBuilder(T)`: Pre-allocates buffer.
+    - `builder.push(val: T): ArrayBuilder(T)`: Appends value, returning updated builder. When uniquely referenced (`rc == 1`), modifies the buffer in-place without reallocation.
+    - `builder.len(): i64`: Current element count.
+    - `builder.capacity(): i64`: Current capacity.
+    - `builder.build(): [T]`: Seals builder into immutable Perceus array `[T]`. Zero-copy when uniquely owned (`rc == 1`), otherwise CoW-copied with reference count increments on heap elements.
+- **Import Path**: `import { ... } from "std:collections";`
+- **`List(T)` Functional Singly-Linked List**:
+  - `type List(T) = Cons(T, List(T)) | Nil;`
+  - `listFrom(arr: [T]): List(T)`: Converts array to immutable linked list.
+  - `listToArray(list: List(T)): [T]`: Converts linked list to array via `ArrayBuilder(T)`.
+- **Higher-Order Array Utilities**:
+  - `map(arr: [T], f: (T) => U): [U]`: Applies transformer to each element.
+  - `filter(arr: [T], pred: (T) => bool): [T]`: Retains elements satisfying predicate.
+  - `fold(arr: [T], init: Acc, f: (Acc, T) => Acc): Acc`: Left-associative accumulator.
+  - `reduce(arr: [T], f: (T, T) => T): Result(T, String)`: Reduces non-empty array.
+  - `find(arr: [T], pred: (T) => bool): Option(T)`: Returns first matching element.
+  - `findIndex(arr: [T], pred: (T) => bool): i64`: Returns index of first match or `-1`.
+  - `any(arr: [T], pred: (T) => bool): bool`: Tests if any element satisfies predicate.
+  - `all(arr: [T], pred: (T) => bool): bool`: Tests if all elements satisfy predicate.
+  - `slice(arr: [T], start: i64, end: i64): [T]`: Subarray slice supporting negative bounds.
+  - `concat(a: [T], b: [T]): [T]`: Concatenates two arrays.
+  - `reverse(arr: [T]): [T]`: Reverses array order.
+
 ---
 
 ## 3. Standard Library Roadmap: What to Build Next
@@ -170,20 +274,24 @@ flowchart TD
         PROC["std:process (PID, Exit, Abort)"]
     end
 
-    subgraph Phase2["Phase 2: Fundamental Utilities (Next Priority)"]
-        STR["std:string (Pure String Manipulation)"]
-        MATH["std:math (Pure Math & Constants)"]
+    subgraph Phase2["Phase 2: Fundamental Pure Utilities (Completed)"]
+        STR["std:string (Pure String Manipulation & Parsing)"]
+        MATH["std:math (Pure Math, Libm, Float Rounding)"]
         TIME["std:time (Durations, Sleep, Clocks)"]
     end
 
-    subgraph Phase3["Phase 3: Data Structures & Networking"]
-        COLL["std:collections (Vector, Map, Set)"]
+    subgraph Phase3["Phase 3: Collections & Networking"]
+        BUILDER["ArrayBuilder(T) FBIP Builtin (Completed)"]
+        COLL["std:collections (List, map, filter, fold) (Completed)"]
+        MAPSET["Map(K, V) & Set(T) Persistent Collections"]
         NET["std:net (Sockets & HTTP)"]
     end
 
     subgraph Phase4["Phase 4: Compiler Decoupling & modus-std"]
+        CASTING["Primitive Type Casting Syntax (Completed)"]
+        SPLIT_DEC["Milestone 4.2: Pure Modus split Decoupling (Completed)"]
+        FS_DEC["Milestone 4.1: Pure Modus POSIX fs Decoupling"]
         MIN_RT["Minimal Compiler Runtime (alloc, RC, headers only)"]
-        PURE_FFI["Pure Modus OS / libc / POSIX Bindings"]
         STANDALONE["Standalone 'modus-std' Package & Distribution"]
     end
 
@@ -194,68 +302,6 @@ flowchart TD
 
 ---
 
-### Phase 1b: System Environment (Immediate Next Priority)
-
-#### `std:env` & `std:process` (Execution Environment)
-Allows CLI applications and tools to receive inputs, read configuration, and exit cleanly.
-- **Environment & CLI Arguments**:
-  - `args(): IO([String])`: Access command-line arguments.
-  - `getEnv(key: String): IO(Option(String))`: Retrieve environment variable.
-  - `setEnv(key: String, value: String): IO(Result(void, IOError))`: Set environment variable.
-  - `currentDir(): IO(Result(String, IOError))`: Get working directory.
-  - `setCurrentDir(path: String): IO(Result(void, IOError))`: Change working directory.
-- **Process Lifecycle**:
-  - `exit(code: i32): IO(void)`: Terminate process with exit code.
-  - `pid(): IO(i32)`: Current process ID.
-
----
-
-### Phase 2: Fundamental Pure Utilities
-
-#### 3. `std:string` (String Algorithms & Parsing)
-Pure functional functions for manipulating text:
-- `length(s: String): i64` / `s.length(): i64`
-- `trim(s: String): String`
-- `split(s: String, delimiter: String): [String]`
-- `join(parts: [String], delimiter: String): String`
-- `startsWith(s: String, prefix: String): bool`
-- `endsWith(s: String, suffix: String): bool`
-- `contains(s: String, substr: String): bool`
-- `replace(s: String, from: String, to: String): String`
-- `substring(s: String, start: i64, length: i64): String`
-- `parseInt(s: String): Result(i64, String)`
-- `parseFloat(s: String): Result(f64, String)`
-
-#### 4. `std:math` (Pure Mathematics)
-Mathematical operations and floating-point constants:
-- Constants: `PI: f64 = 3.141592653589793`, `E: f64 = 2.718281828459045`
-- Functions: `abs`, `min`, `max`, `sqrt`, `pow`, `exp`, `ln`, `log10`
-- Trigonometry: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
-- Rounding: `floor`, `ceil`, `round`, `trunc`
-
-#### 5. `std:time` (Time & Duration)
-- `now(): IO(u64)`: Epoch timestamp in milliseconds.
-- `nowNanos(): IO(u64)`: High-precision epoch timestamp in nanoseconds.
-- `sleep(millis: u64): IO(void)`: Sleep for specified duration.
-- `type Duration = { nanos: u64 };`
-- `type Instant = { nanos: u64 };`
-
----
-
-### Phase 3: Collections & Networking
-
-#### 6. `std:collections` (Functional Data Structures)
-- Functional Array/List utilities: `map`, `filter`, `fold`, `find`, `any`, `all`, `zip`, `reverse`, `sort`.
-- `Map(K, V)`: Immutable key-value map with FBIP update optimizations.
-- `Set(T)`: Immutable set implementation.
-
-#### 7. `std:net` (Networking & Sockets)
-- TCP streams and listeners (`TcpListener`, `TcpStream`).
-- UDP sockets (`UdpSocket`).
-- Basic HTTP client primitives (`fetch(url: String): IO(Result(HttpResponse, NetworkError))`).
-
----
-
 ### Phase 4: Compiler Decoupling & `modus-std` Architecture
 
 #### 8. Vision: The `rustc` / `rust-std` Separation Model
@@ -263,7 +309,7 @@ In mature systems compilers such as Rust (`rustc`), the compiler itself maintain
 - `rustc` compiles code and provides minimal internal runtime symbols (`rust_begin_panic`, intrinsic memory operations, eh personality).
 - `rust-std` (along with `core` and `alloc`) is written in pure Rust with `extern "C"` blocks, distributed as precompiled artifacts or source, and linked cleanly against user code.
 
-Modus will follow this exact model. The compiler runtime (`src/backend/runtime.rs`) must be stripped of all domain-specific logic, leaving only a lean, language-essential kernel:
+Modus follows this exact model. The compiler runtime (`src/backend/runtime.rs`) is being stripped of all domain-specific logic, leaving only a lean, language-essential kernel:
 - **What stays in the compiler runtime**:
   - Memory allocation and deallocation (`modus_alloc`, `modus_free`).
   - Perceus reference counting (`modus_inc_ref`, `modus_dec_ref`).
@@ -271,43 +317,40 @@ Modus will follow this exact model. The compiler runtime (`src/backend/runtime.r
   - Primitive string operations (`modus_str_concat`, `modus_str_eq`).
   - Fatal panic / abort / array bounds-check handlers.
 - **What must be stripped out of the compiler**:
-  - `modus_fs_read_dir`, `modus_fs_rename`, `modus_str_split`, and any future domain helpers.
+  - `modus_fs_read_dir`, `modus_fs_rename`, and any future domain helpers.
   - POSIX directory handling, file descriptors, environment inspection, network sockets, process spawning.
 
 #### 9. Current Status & Transitional Helpers
-Currently, Modus relies on three transitional helpers in `src/backend/runtime.rs`:
+Following the completion of dynamic collection builders and pure Modus string splitting, only **two** transitional helpers remain in `src/backend/runtime.rs`:
 - `modus_fs_read_dir`: Implemented in LLVM IR because:
   1. Reading POSIX directories requires unpacking C's `struct dirent`, whose internal field offsets (e.g. `d_name`) vary across operating systems.
-  2. Modus currently lacks dynamic array buffer builders that can push items into a `[String]` array while maintaining Perceus RC invariants.
-- `modus_fs_rename`: Implemented as a runtime shim to wrap libc `rename`.
-- `modus_str_split`: Implemented in LLVM IR because:
-  1. Modus array values `[T]` are heap-allocated records under Perceus RC (`{ rc: i64 = 1, len: i64, cap: i64, reserved: ptr, [T...] }`).
-  2. Modus array syntax currently only supports compile-time fixed-length literal constructors `[a, b, c]`. Modus lacks dynamic collection builders (`ArrayBuilder(T)` or `arr.push(elem)`).
-  3. Modus is pure-by-default: `split(s: String, delim: String): [String]` is a pure function. Raw pointer mutations (`Pointer.write`) require `IO(void)` effects, which cannot be invoked in a pure context (`perform` in non-`IO` function is a type error). Building a dynamic-length array of strings at runtime thus requires an accumulation mechanism or this transitional runtime helper.
+  2. Modus struct offsetting for foreign C records is pending implementation.
+- `modus_fs_rename`: Implemented as a temporary runtime shim to wrap libc `rename`.
 
 > [!NOTE]
+> - `modus_str_split` has been **completely eliminated** from the compiler runtime. In `stdlib/string.mds`, `split` is implemented in 100% pure Modus using `ArrayBuilder(String)` with zero runtime overhead.
 > - String transformations `toLowerCase`, `toUpperCase`, and character generator `fromCharCode` are implemented in 100% pure Modus using tail-recursive loops with zero runtime additions.
 > - Floating-point rounding `fround` is implemented in 100% pure Modus via native `(x as f32) as f64`. The `modus_fround` helper has been completely eliminated from the compiler runtime.
 
 #### 10. Decoupling Prerequisites
-To strip the remaining helpers and move all standard library code to pure Modus, the following compiler capabilities will be implemented:
+To strip the remaining two helpers and move all standard library code to pure Modus:
 1. **Platform-Specific C Struct / Pointer Offsetting in Pure Modus**:
    - Defining C-struct layouts or using pointer offset primitives: `dirent_ptr.offset(NAME_OFFSET).read()`.
    - Cross-platform target constants (e.g. Linux vs macOS vs Windows struct offsets).
-2. **Dynamic Collection Builders (`ListBuilder(T)` / `ArrayBuilder(T)`)**:
-   - Pure or intrinsic collection builder allowing accumulation of elements before sealing into an immutable Perceus `[T]`. This unblocks replacing both `modus_fs_read_dir` and `modus_str_split`.
+2. **Dynamic Collection Builders (`ArrayBuilder(T)`) [COMPLETED]**:
+   - Pure-by-default collection builder with Perceus FBIP in-place mutation and zero-copy `.build()`, fully integrated into typechecker, desugaring, ANF/IR, and LLVM backend.
 3. **Explicit Type Casting / Numeric Conversion Syntax [COMPLETED]**:
    - Language syntax `expr as Type` implemented across AST, parser, typechecker, ANF/IR, and LLVM backend, enabling integer widening/narrowing, float truncation/extension, int-float conversions, and pointer-integer conversions.
 4. **Pure Modus libc / POSIX Declarations**:
    - Moving all `opendir`, `readdir`, `closedir`, `rename`, `stat`, and other POSIX declarations into `stdlib/` Modus files without compiler backend involvement.
 
 #### 11. Decoupling Milestones
-- **Milestone 4.1: Pure Modus POSIX Re-implementation**:
-  - Rewrite `readDir` and `rename` in `stdlib/fs.mds` using pure Modus pointer operations and libc calls once struct offsetting and `ArrayBuilder` are available.
+- **Milestone 4.1: Pure Modus POSIX Re-implementation (Next Priority)**:
+  - Rewrite `readDir` and `rename` in `stdlib/fs.mds` using pure Modus pointer operations, `ArrayBuilder(String)`, and libc calls once struct offsetting is available.
   - Remove `modus_fs_read_dir` and `modus_fs_rename` from `src/backend/runtime.rs`.
-- **Milestone 4.2: Pure Modus Dynamic Array Splitting**:
-  - Replace `modus_str_split` with pure Modus `split` leveraging `ArrayBuilder(String)`.
-  - Remove `modus_str_split` from `src/backend/runtime.rs`.
+- **Milestone 4.2: Pure Modus Dynamic Array Splitting [COMPLETED]**:
+  - Replaced `modus_str_split` with pure Modus `split` in `stdlib/string.mds` leveraging `ArrayBuilder(String)`.
+  - Removed `modus_str_split` entirely from `src/backend/runtime.rs`.
 - **Milestone 4.3: Strip `src/backend/runtime.rs` to Minimal Kernel**:
   - Audit compiler runtime exports to verify zero OS-specific or domain-specific symbols remain.
   - Support a minimal, dependency-free runtime suitable for bare-metal / embedded targets (`no_std`).
@@ -317,18 +360,11 @@ To strip the remaining helpers and move all standard library code to pure Modus,
 
 ---
 
-## 4. Implementation Strategy: Next Phase (Phase 2: `std:string` & `std:math`)
+## 4. Next Priorities: Phase 3 & Remaining Decoupling
 
-1. **`std:string` Implementation**:
-   - Pure string manipulation routines: `trim`, `startsWith`, `endsWith`, `contains`, `substring`, `split`, `join`.
-   - String parsing utilities: `parseInt`, `parseFloat`.
-   - String transformation and character inspection.
-2. **`std:math` Implementation**:
-   - Pure mathematical functions (`abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil`, `round`).
-   - Trigonometric operations (`sin`, `cos`, `tan`, `asin`, `acos`, `atan`).
-   - Floating-point constants (`PI`, `E`, `TAU`).
-   - All implemented with zero runtime overhead using standard C math library (`libm`) bindings and LLVM intrinsics.
-3. **Decoupling Discipline**:
-   - Preserve zero new additions to `runtime.rs`; all standard library utilities remain pure Modus or pure libc bindings.
-4. **Testing**:
-   - Verification through `tests/stdlib_string_tests.rs` and `tests/stdlib_math_tests.rs` across JIT and AOT targets.
+1. **Phase 3 Expansion**:
+   - Persistent collections: Immutable `Map(K, V)` and `Set(T)`.
+   - Networking: `std:net` (TCP streams, listeners, UDP sockets, and HTTP client primitives).
+2. **Decoupling Milestone 4.1**:
+   - Struct offsetting / FFI struct layout support in pure Modus.
+   - Decouple `readDir` and `rename` in `std:fs` to eliminate the final two transitional helpers in `src/backend/runtime.rs`.

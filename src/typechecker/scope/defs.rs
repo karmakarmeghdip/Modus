@@ -14,6 +14,7 @@ pub struct FunctionSig {
     pub is_effectful: bool,
     pub span: Span,
     pub symbol_name: Option<String>,
+    pub is_c_abi: bool,
 }
 
 impl FunctionSig {

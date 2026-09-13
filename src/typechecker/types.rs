@@ -115,6 +115,26 @@ impl Type {
         }
     }
 
+    pub fn array_builder(inner: Type) -> Self {
+        Type::Named {
+            name: "ArrayBuilder".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    pub fn is_array_builder(&self) -> bool {
+        matches!(self, Type::Named { name, args } if name == "ArrayBuilder" && args.len() == 1)
+    }
+
+    pub fn unwrap_array_builder(&self) -> Option<&Type> {
+        match self {
+            Type::Named { name, args } if name == "ArrayBuilder" && args.len() == 1 => {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
     pub fn cstring() -> Self {
         Type::Named {
             name: "CString".to_string(),

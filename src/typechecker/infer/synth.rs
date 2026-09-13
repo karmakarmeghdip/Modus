@@ -168,6 +168,46 @@ impl<'a> TypeInferrer<'a> {
                         }
                     }
 
+                    if type_name == "ArrayBuilder" {
+                        match method.as_str() {
+                            "new" => {
+                                if !args.is_empty() {
+                                    return Err(TypeError::new(
+                                        TypeErrorKind::ArgCountMismatch {
+                                            expected: 0,
+                                            found: args.len(),
+                                        },
+                                        Some(expr.span),
+                                    ));
+                                }
+                                return Ok(Type::array_builder(self.var_gen.fresh()));
+                            }
+                            "withCapacity" => {
+                                if args.len() != 1 {
+                                    return Err(TypeError::new(
+                                        TypeErrorKind::ArgCountMismatch {
+                                            expected: 1,
+                                            found: args.len(),
+                                        },
+                                        Some(expr.span),
+                                    ));
+                                }
+                                let cap_ty = self.synth_expr(&args[0])?;
+                                if !self.subst.apply(&cap_ty).is_integer() {
+                                    return Err(TypeError::new(
+                                        TypeErrorKind::TypeMismatch {
+                                            expected: "integer".to_string(),
+                                            found: cap_ty.to_string(),
+                                        },
+                                        Some(args[0].span),
+                                    ));
+                                }
+                                return Ok(Type::array_builder(self.var_gen.fresh()));
+                            }
+                            _ => {}
+                        }
+                    }
+
                     if type_name == "String" && method == "toCString" {
                         if args.len() != 1 {
                             return Err(TypeError::new(
@@ -381,6 +421,81 @@ impl<'a> TypeInferrer<'a> {
                             return Ok(ret);
                         }
                         _ => {}
+                    }
+                }
+
+                if expanded_recv.is_array_builder() {
+                    let elem_ty = expanded_recv.unwrap_array_builder().unwrap().clone();
+                    match method.as_str() {
+                        "push" => {
+                            if args.len() != 1 {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 1,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            self.check_expr(&args[0], &elem_ty)?;
+                            return Ok(applied_ty);
+                        }
+                        "build" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(Type::Array(Box::new(elem_ty)));
+                        }
+                        "length" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(Type::i64());
+                        }
+                        "capacity" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(Type::i64());
+                        }
+                        "isEmpty" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(Type::bool());
+                        }
+                        _ => {
+                            return Err(TypeError::new(
+                                TypeErrorKind::General(format!(
+                                    "Method '{method}' not found on ArrayBuilder"
+                                )),
+                                Some(expr.span),
+                            ));
+                        }
                     }
                 }
 
@@ -713,8 +828,11 @@ impl<'a> TypeInferrer<'a> {
                 let mut param_types = Vec::new();
                 for param in params {
                     let p_ty = if param.ty.node != ast::Type::Unit {
-                        self.env
-                            .resolve_ast_type(&param.ty.node, &[], Some(param.ty.span))?
+                        self.env.resolve_ast_type(
+                            &param.ty.node,
+                            &self.generics_in_scope,
+                            Some(param.ty.span),
+                        )?
                     } else {
                         self.var_gen.fresh()
                     };
@@ -724,9 +842,11 @@ impl<'a> TypeInferrer<'a> {
                 }
 
                 let ret_ty = if let Some(ret_ann) = return_type {
-                    let ann = self
-                        .env
-                        .resolve_ast_type(&ret_ann.node, &[], Some(ret_ann.span))?;
+                    let ann = self.env.resolve_ast_type(
+                        &ret_ann.node,
+                        &self.generics_in_scope,
+                        Some(ret_ann.span),
+                    )?;
                     match body {
                         FunctionBody::Expr(ret_expr) => {
                             self.check_expr(ret_expr, &ann)?;
@@ -828,10 +948,9 @@ impl<'a> TypeInferrer<'a> {
             } => {
                 let from_ty = self.synth_expr(sub_expr)?;
                 let from_ty_expanded = self.subst.apply(&from_ty);
-                let generics: Vec<String> = self.generic_bounds.keys().cloned().collect();
                 let to_ty = self.env.resolve_ast_type(
                     &target_type.node,
-                    &generics,
+                    &self.generics_in_scope,
                     Some(target_type.span),
                 )?;
                 let to_ty_expanded = self.subst.apply(&to_ty);

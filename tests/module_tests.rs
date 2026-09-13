@@ -832,3 +832,114 @@ export function calculate(): i32 {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_calling_conventions_fastcc_vs_ccc() {
+    use inkwell::context::Context;
+    use modus::backend::CodeGen;
+    use modus::desugar::desugar_program;
+    use modus::ir::{apply_perceus_and_fbip, convert_closures, lower_program};
+    use modus::modules::{ModuleGraph, check_module_graph_with_envs};
+
+    let temp_dir = std::env::temp_dir().join(format!("modus_test_cc_conv_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let lib_src = temp_dir.join("mylib.mds");
+    let app_src = temp_dir.join("app.mds");
+
+    std::fs::write(
+        &lib_src,
+        r#"
+function internal_helper(x: i32): i32 {
+    return x + 1;
+}
+
+export function exported_fn(x: i32): i32 {
+    return internal_helper(x) * 2;
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &app_src,
+        r#"
+import { exported_fn } from "./mylib.mds";
+
+function main(): i32 {
+    return exported_fn(5);
+}
+"#,
+    )
+    .unwrap();
+
+    let graph = ModuleGraph::build(&app_src).expect("ModuleGraph build should succeed");
+    let (_interfaces, envs) =
+        check_module_graph_with_envs(&graph).expect("Graph typecheck should succeed");
+
+    let lib_node = graph
+        .modules
+        .values()
+        .find(|n| n.id.path().ends_with("mylib.mds"))
+        .unwrap();
+    let lib_env = envs.get(&lib_node.id).unwrap();
+
+    // 1. Normal compilation (not --lib): All Modus functions use fastcc!
+    {
+        let desugared = desugar_program(&lib_node.program, lib_env);
+        let mut anf = lower_program(&desugared);
+        convert_closures(&mut anf);
+        apply_perceus_and_fbip(&mut anf);
+
+        let context = Context::create();
+        let mut codegen = CodeGen::new(&context, &lib_node.id.module_ident());
+        codegen.is_lib_entry = false;
+        codegen.compile_program(&anf).unwrap();
+        let ir = codegen.to_ir_string();
+
+        assert!(ir.contains("define fastcc i32 @internal_helper(i32 %0)"));
+        assert!(ir.contains("define fastcc i32 @_modus_M_mylib_exported_fn(i32 %0)"));
+        assert!(ir.contains("call fastcc i32 @internal_helper"));
+    }
+
+    // 2. Library compilation (--lib on entrypoint file): Exported functions use ccc (0), internal use fastcc (8)!
+    {
+        let desugared = desugar_program(&lib_node.program, lib_env);
+        let mut anf = lower_program(&desugared);
+        convert_closures(&mut anf);
+        apply_perceus_and_fbip(&mut anf);
+
+        let context = Context::create();
+        let mut codegen = CodeGen::new(&context, &lib_node.id.module_ident());
+        codegen.is_lib_entry = true;
+        codegen.compile_program(&anf).unwrap();
+        let ir = codegen.to_ir_string();
+
+        assert!(ir.contains("define fastcc i32 @internal_helper(i32 %0)"));
+        assert!(ir.contains("define i32 @_modus_M_mylib_exported_fn(i32 %0)")); // Standard ccc (no fastcc prefix)
+        assert!(ir.contains("call fastcc i32 @internal_helper"));
+    }
+
+    // 3. Consumer importing from source module: Uses fastcc for the imported function!
+    {
+        let app_node = graph.modules.get(&graph.entry).unwrap();
+        let app_env = envs.get(&app_node.id).unwrap();
+
+        let desugared = desugar_program(&app_node.program, app_env);
+        let mut anf = lower_program(&desugared);
+        convert_closures(&mut anf);
+        apply_perceus_and_fbip(&mut anf);
+
+        let context = Context::create();
+        let mut codegen = CodeGen::new(&context, &app_node.id.module_ident());
+        codegen.compile_program(&anf).unwrap();
+        let ir = codegen.to_ir_string();
+
+        assert!(ir.contains("declare fastcc i32 @_modus_M_mylib_exported_fn(i32)"));
+        assert!(ir.contains("call fastcc i32 @_modus_M_mylib_exported_fn"));
+        assert!(ir.contains("define i32 @main()")); // main uses ccc
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

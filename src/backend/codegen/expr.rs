@@ -101,6 +101,9 @@ impl<'ctx> CodeGen<'ctx> {
 
             AnfExpr::Call { callee, args } => {
                 if let Atom::Var(name) = callee {
+                    if let Some(&tag) = self.union_variants.get(name) {
+                        return self.build_variant_constructor(tag, args);
+                    }
                     if name == "Ok" || name == "Some" {
                         return self.build_variant_constructor(0, args);
                     }
@@ -132,7 +135,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 .ptr_type(AddressSpace::default())
                                 .fn_type(&param_tys, false);
                             let f = self.module.add_function(name, fn_ty, None);
-                            f.set_call_conventions(8);
+                            let is_main = name == "main";
+                            let is_exported_lib =
+                                self.is_lib_entry && name.starts_with("_modus_M_");
+                            let call_conv = if is_main || is_exported_lib { 0 } else { 8 };
+                            f.set_call_conventions(call_conv);
                             self.functions.insert(name.clone(), f);
                             f
                         }
@@ -176,16 +183,18 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
-                // Discriminated union constructors: Result.Ok, Result.Err, Option.Some, Option.None
-                if let Atom::Var(r) = receiver
-                    && (r == "Result" || r == "Option")
-                {
-                    let tag = if method == "Ok" || method == "Some" {
-                        0
-                    } else {
-                        1
-                    };
-                    return self.build_variant_constructor(tag, args);
+                // Discriminated union constructors: Result.Ok, Result.Err, Option.Some, Option.None, List.Cons, List.Nil, etc.
+                if let Atom::Var(r) = receiver {
+                    let qualified = format!("{r}.{method}");
+                    if let Some(&tag) = self.union_variants.get(&qualified).or_else(|| {
+                        if r == "Result" || r == "Option" || r == "List" {
+                            self.union_variants.get(method)
+                        } else {
+                            None
+                        }
+                    }) {
+                        return self.build_variant_constructor(tag, args);
+                    }
                 }
 
                 // Pointer built-ins: Pointer.null, Pointer.fromAddress
@@ -207,6 +216,42 @@ impl<'ctx> CodeGen<'ctx> {
                             .build_int_to_ptr(addr_val.into_int_value(), ptr_ty, "from_addr")
                             .unwrap();
                         return Ok(ptr_val.into());
+                    }
+                }
+
+                // ArrayBuilder static constructors: ArrayBuilder.new, ArrayBuilder.withCapacity
+                if let Atom::Var(r) = receiver
+                    && r == "ArrayBuilder"
+                {
+                    if method == "new" {
+                        let cap_val = self.context.i64_type().const_int(4, false);
+                        let call = self
+                            .builder
+                            .build_call(
+                                self.runtime.array_builder_new_fn,
+                                &[cap_val.into()],
+                                "ab_new",
+                            )
+                            .unwrap();
+                        return Ok(call.try_as_basic_value().basic().unwrap());
+                    }
+                    if method == "withCapacity" {
+                        let cap_val = if let Some(arg) = args.first() {
+                            let cv = self.eval_atom(arg)?;
+                            self.coerce_to_type(cv, self.context.i64_type().into())?
+                                .into_int_value()
+                        } else {
+                            self.context.i64_type().const_int(4, false)
+                        };
+                        let call = self
+                            .builder
+                            .build_call(
+                                self.runtime.array_builder_new_fn,
+                                &[cap_val.into()],
+                                "ab_with_cap",
+                            )
+                            .unwrap();
+                        return Ok(call.try_as_basic_value().basic().unwrap());
                     }
                 }
 
@@ -385,9 +430,179 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
+                if method == "push" && args.len() == 1 {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let is_builder = recv_ty
+                        .as_ref()
+                        .map(|t| t.is_array_builder())
+                        .unwrap_or(false);
+                    if is_builder || recv_ty.is_none() {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "b_ptr")
+                                .unwrap()
+                        };
+                        let elem_val = self.eval_atom(&args[0])?;
+                        let elem_i64 = if elem_val.is_pointer_value() {
+                            self.builder
+                                .build_ptr_to_int(
+                                    elem_val.into_pointer_value(),
+                                    self.context.i64_type(),
+                                    "ptr_int",
+                                )
+                                .unwrap()
+                        } else if elem_val.is_float_value() {
+                            let fv = elem_val.into_float_value();
+                            if fv.get_type() == self.context.f32_type() {
+                                let f64_val = self
+                                    .builder
+                                    .build_float_ext(fv, self.context.f64_type(), "f_ext")
+                                    .unwrap();
+                                self.builder
+                                    .build_bit_cast(f64_val, self.context.i64_type(), "f_bits")
+                                    .unwrap()
+                                    .into_int_value()
+                            } else {
+                                self.builder
+                                    .build_bit_cast(fv, self.context.i64_type(), "f_bits")
+                                    .unwrap()
+                                    .into_int_value()
+                            }
+                        } else {
+                            self.coerce_to_type(elem_val, self.context.i64_type().into())?
+                                .into_int_value()
+                        };
+                        let is_heap = self
+                            .get_atom_type(&args[0])
+                            .map(|t| crate::ir::liveness::is_heap_type(&t))
+                            .unwrap_or(false);
+                        let is_heap_val = self
+                            .context
+                            .bool_type()
+                            .const_int(if is_heap { 1 } else { 0 }, false);
+                        let call = self
+                            .builder
+                            .build_call(
+                                self.runtime.array_builder_push_fn,
+                                &[ptr.into(), elem_i64.into(), is_heap_val.into()],
+                                "ab_push",
+                            )
+                            .unwrap();
+                        return Ok(call.try_as_basic_value().basic().unwrap());
+                    }
+                }
+
+                if method == "build" && args.is_empty() {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let is_builder = recv_ty
+                        .as_ref()
+                        .map(|t| t.is_array_builder())
+                        .unwrap_or(false);
+                    if is_builder || recv_ty.is_none() {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "b_ptr")
+                                .unwrap()
+                        };
+                        let is_heap = recv_ty
+                            .as_ref()
+                            .and_then(|t| t.unwrap_array_builder().cloned())
+                            .map(|et| crate::ir::liveness::is_heap_type(&et))
+                            .unwrap_or(false);
+                        let is_heap_val = self
+                            .context
+                            .bool_type()
+                            .const_int(if is_heap { 1 } else { 0 }, false);
+                        let call = self
+                            .builder
+                            .build_call(
+                                self.runtime.array_builder_build_fn,
+                                &[ptr.into(), is_heap_val.into()],
+                                "ab_build",
+                            )
+                            .unwrap();
+                        return Ok(call.try_as_basic_value().basic().unwrap());
+                    }
+                }
+
+                if method == "capacity" && args.is_empty() {
+                    let recv_val = self.eval_atom(receiver)?;
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let ptr = if recv_val.is_pointer_value() {
+                        recv_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "b_ptr")
+                            .unwrap()
+                    };
+                    let cap_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i64_type(),
+                                ptr,
+                                &[self.context.i64_type().const_int(2, false)],
+                                "ab_cap_ptr",
+                            )
+                            .unwrap()
+                    };
+                    let cap_val = self
+                        .builder
+                        .build_load(self.context.i64_type(), cap_ptr, "ab_cap")
+                        .unwrap();
+                    return Ok(cap_val);
+                }
+
+                if method == "isEmpty" && args.is_empty() {
+                    let recv_val = self.eval_atom(receiver)?;
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let ptr = if recv_val.is_pointer_value() {
+                        recv_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "b_ptr")
+                            .unwrap()
+                    };
+                    let len_ptr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i64_type(),
+                                ptr,
+                                &[self.context.i64_type().const_int(1, false)],
+                                "ab_len_ptr",
+                            )
+                            .unwrap()
+                    };
+                    let len_val = self
+                        .builder
+                        .build_load(self.context.i64_type(), len_ptr, "ab_len")
+                        .unwrap()
+                        .into_int_value();
+                    let is_empty = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            len_val,
+                            self.context.i64_type().const_int(0, false),
+                            "ab_is_empty",
+                        )
+                        .unwrap();
+                    return Ok(is_empty.into());
+                }
+
                 if method == "length" && args.is_empty() {
                     let recv_ty = self.get_atom_type(receiver);
-                    let is_arr = recv_ty.as_ref().map(|t| t.is_array()).unwrap_or(false);
+                    let is_arr = recv_ty
+                        .as_ref()
+                        .map(|t| t.is_array() || t.is_array_builder())
+                        .unwrap_or(false);
                     let is_str = recv_ty.as_ref().map(|t| t.is_string()).unwrap_or(false);
                     if is_arr || (!is_str && recv_ty.is_none()) {
                         let recv_val = self.eval_atom(receiver)?;
@@ -725,6 +940,20 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             AnfExpr::FieldAccess { receiver, field } => {
+                // Check if this is a nullary union constructor like Option.None, List.Nil
+                if let Atom::Var(r) = receiver {
+                    let qualified = format!("{r}.{field}");
+                    if let Some(&tag) = self.union_variants.get(&qualified).or_else(|| {
+                        if r == "Option" || r == "Result" || r == "List" {
+                            self.union_variants.get(field)
+                        } else {
+                            None
+                        }
+                    }) {
+                        return self.build_variant_constructor(tag, &[]);
+                    }
+                }
+
                 let recv_val = self.eval_atom(receiver)?;
                 let ptr = if recv_val.is_pointer_value() {
                     recv_val.into_pointer_value()
@@ -1322,14 +1551,23 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_load(self.context.i64_type(), tag_ptr, "tag")
                         .unwrap()
                         .into_int_value();
-                    let exp_tag_val =
-                        if variant == "Ok" || variant == "Some" || variant == "CircleShape" {
-                            0
-                        } else if variant == "Err" || variant == "None" || variant == "RectShape" {
-                            1
-                        } else {
-                            2
-                        };
+                    let exp_tag_val = if let Some(&tag) = self.union_variants.get(variant) {
+                        tag
+                    } else if variant == "Ok"
+                        || variant == "Some"
+                        || variant == "CircleShape"
+                        || variant == "Cons"
+                    {
+                        0
+                    } else if variant == "Err"
+                        || variant == "None"
+                        || variant == "RectShape"
+                        || variant == "Nil"
+                    {
+                        1
+                    } else {
+                        2
+                    };
                     let exp_tag = self.context.i64_type().const_int(exp_tag_val, false);
                     let eq_tag = self
                         .builder
@@ -1383,6 +1621,18 @@ impl<'ctx> CodeGen<'ctx> {
                                 } else if name == "Option" && variant == "Some" && !args.is_empty()
                                 {
                                     Some(args[0].clone())
+                                } else if name == "List" && variant == "Cons" {
+                                    let t_elem = args.first().cloned().unwrap_or(Type::i64());
+                                    let mut rec = BTreeMap::new();
+                                    rec.insert("head".to_string(), t_elem.clone());
+                                    rec.insert(
+                                        "tail".to_string(),
+                                        Type::Named {
+                                            name: "List".to_string(),
+                                            args: vec![t_elem],
+                                        },
+                                    );
+                                    Some(Type::Record(rec))
                                 } else {
                                     None
                                 }
@@ -1634,8 +1884,9 @@ impl<'ctx> CodeGen<'ctx> {
         }
         // Fallback default index
         match field {
-            "x" | "first" | "radius" | "host" | "value" | "code" | "fd" | "size" | "read" => 1,
-            "y" | "second" | "w" | "port" | "message" | "path" | "is_file" | "write" => 2,
+            "head" | "x" | "first" | "radius" | "host" | "value" | "code" | "fd" | "size"
+            | "read" => 1,
+            "tail" | "y" | "second" | "w" | "port" | "message" | "path" | "is_file" | "write" => 2,
             "z" | "h" | "tls" | "is_dir" | "create" => 3,
             "append" | "modified_at" => 4,
             "truncate" => 5,

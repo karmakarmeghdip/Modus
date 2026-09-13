@@ -65,6 +65,44 @@ impl Environment {
             },
         );
 
+        // Register built-in ArrayBuilder(T) type
+        self.types.insert(
+            "ArrayBuilder".to_string(),
+            TypeDefInfo::Builtin {
+                name: "ArrayBuilder".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "T".to_string(),
+                    bound: None,
+                }],
+            },
+        );
+
+        // Register ArrayBuilder.new constructor: () => ArrayBuilder(T)
+        self.constructors.insert(
+            "ArrayBuilder.new".to_string(),
+            ConstructorInfo::Function {
+                params: vec![],
+                return_type: Type::array_builder(Type::GenericParam("T".to_string())),
+                type_params: vec![ast::TypeParam {
+                    name: "T".to_string(),
+                    bound: None,
+                }],
+            },
+        );
+
+        // Register ArrayBuilder.withCapacity constructor: (i64) => ArrayBuilder(T)
+        self.constructors.insert(
+            "ArrayBuilder.withCapacity".to_string(),
+            ConstructorInfo::Function {
+                params: vec![Type::i64()],
+                return_type: Type::array_builder(Type::GenericParam("T".to_string())),
+                type_params: vec![ast::TypeParam {
+                    name: "T".to_string(),
+                    bound: None,
+                }],
+            },
+        );
+
         // Register IO.pure constructor: (T) => IO(T)
         self.constructors.insert(
             "IO.pure".to_string(),
@@ -117,6 +155,7 @@ impl Environment {
                 is_effectful: true,
                 span: Span::default(),
                 symbol_name: None,
+                is_c_abi: false,
             },
         );
         self.traits.insert(
@@ -157,6 +196,7 @@ impl Environment {
                 is_effectful: false,
                 span: Span::default(),
                 symbol_name: None,
+                is_c_abi: false,
             },
         );
         self.traits.insert(
@@ -208,6 +248,7 @@ impl Environment {
                     is_effectful: false,
                     span: Span::default(),
                     symbol_name: None,
+                    is_c_abi: false,
                 },
             );
             self.register_impl(ImplDef {

@@ -162,6 +162,9 @@ impl ModuleInterface {
                     if let Some(sig) = self.exported_functions.get(name) {
                         let mut imported_sig = sig.clone();
                         imported_sig.name = target_name.clone();
+                        if self.library_path.is_some() {
+                            imported_sig.is_c_abi = true;
+                        }
                         let _ = env.define_function(imported_sig);
                         found = true;
                     }
@@ -215,6 +218,10 @@ impl ModuleInterface {
                     }
                     imported_sig.return_type =
                         qualify_type(&imported_sig.return_type, alias, &self.exported_types);
+
+                    if self.library_path.is_some() {
+                        imported_sig.is_c_abi = true;
+                    }
 
                     let _ = env.define_function(imported_sig.clone());
 

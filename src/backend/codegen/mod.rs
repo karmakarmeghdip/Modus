@@ -41,6 +41,8 @@ pub struct CodeGen<'ctx> {
     pub(crate) current_fn_ret: Option<Type>,
     pub(crate) record_field_indices: HashMap<String, BTreeMap<String, u32>>,
     pub(crate) type_field_indices: HashMap<String, BTreeMap<String, u32>>,
+    pub(crate) union_variants: HashMap<String, u64>,
+    pub is_lib_entry: bool,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -49,6 +51,22 @@ impl<'ctx> CodeGen<'ctx> {
         let builder = context.create_builder();
         let type_lowerer = TypeLowerer::new(context);
         let runtime = Runtime::new(context, &module);
+
+        let mut union_variants = HashMap::new();
+        union_variants.insert("Result.Ok".to_string(), 0);
+        union_variants.insert("Result.Err".to_string(), 1);
+        union_variants.insert("Ok".to_string(), 0);
+        union_variants.insert("Err".to_string(), 1);
+
+        union_variants.insert("Option.Some".to_string(), 0);
+        union_variants.insert("Option.None".to_string(), 1);
+        union_variants.insert("Some".to_string(), 0);
+        union_variants.insert("None".to_string(), 1);
+
+        union_variants.insert("List.Cons".to_string(), 0);
+        union_variants.insert("List.Nil".to_string(), 1);
+        union_variants.insert("Cons".to_string(), 0);
+        union_variants.insert("Nil".to_string(), 1);
 
         Self {
             context,
@@ -64,22 +82,33 @@ impl<'ctx> CodeGen<'ctx> {
             current_fn_ret: None,
             record_field_indices: HashMap::new(),
             type_field_indices: HashMap::new(),
+            union_variants,
+            is_lib_entry: false,
         }
     }
 
     /// Compiles an entire `AnfProgram` into the LLVM module.
     pub fn compile_program(&mut self, prog: &AnfProgram) -> Result<(), String> {
-        // Collect record type field indices
+        // Collect record type field indices and union variants
         for ty_decl in &prog.types {
-            if let crate::ast::TypeDef::Alias(crate::ast::Type::Record(fields)) =
-                &ty_decl.definition.node
-            {
-                let mut idx_map = BTreeMap::new();
-                for (i, (f_name, _)) in fields.iter().enumerate() {
-                    idx_map.insert(f_name.clone(), (i + 1) as u32);
+            match &ty_decl.definition.node {
+                crate::ast::TypeDef::Alias(crate::ast::Type::Record(fields)) => {
+                    let mut idx_map = BTreeMap::new();
+                    for (i, (f_name, _)) in fields.iter().enumerate() {
+                        idx_map.insert(f_name.clone(), (i + 1) as u32);
+                    }
+                    self.type_field_indices
+                        .insert(ty_decl.name.clone(), idx_map);
                 }
-                self.type_field_indices
-                    .insert(ty_decl.name.clone(), idx_map);
+                crate::ast::TypeDef::Union(variants) => {
+                    for (i, var) in variants.iter().enumerate() {
+                        let tag = i as u64;
+                        self.union_variants
+                            .insert(format!("{}.{}", ty_decl.name, var.name), tag);
+                        self.union_variants.insert(var.name.clone(), tag);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -125,7 +154,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .type_lowerer
                 .function_type(&ext.param_types, &ext.return_type);
             let f = self.module.add_function(&ext.symbol_name, fn_type, None);
-            f.set_call_conventions(0);
+            let call_conv = if ext.is_c_abi { 0 } else { 8 };
+            f.set_call_conventions(call_conv);
             f
         };
         self.functions.insert(ext.symbol_name.clone(), fn_val);
@@ -145,10 +175,12 @@ impl<'ctx> CodeGen<'ctx> {
 
         let fn_val = self.module.add_function(&func.name, fn_type, None);
 
-        // Entry point and exported library functions use standard calling convention (ccc = 0)
-        // Unexported internal functions use fastcc (8)
-        let is_exported_or_entry = func.name == "main" || func.name.starts_with("_modus_M_");
-        let call_conv = if is_exported_or_entry { 0 } else { 8 };
+        // Entry point main uses ccc (0).
+        // Exported functions in the entrypoint file compiled with --lib use ccc (0).
+        // All other internal and Modus-to-Modus functions use fastcc (8).
+        let is_main = func.name == "main";
+        let is_exported_lib = self.is_lib_entry && func.name.starts_with("_modus_M_");
+        let call_conv = if is_main || is_exported_lib { 0 } else { 8 };
         fn_val.set_call_conventions(call_conv);
 
         self.functions.insert(func.name.clone(), fn_val);

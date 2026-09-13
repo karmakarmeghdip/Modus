@@ -6,7 +6,6 @@ extern "C" {
     function strdup(s: CString): String;
     function strtoll(nptr: CString, endptr: Pointer(void), base: i32): i64;
     function strtod(nptr: CString, endptr: Pointer(void)): f64;
-    function modus_str_split(s: CString, delim: CString): [String];
 }
 
 // 1. Inspection & Element Access
@@ -382,7 +381,41 @@ function to_upper_loop(s: String, idx: i64, len: i64, acc: String): String {
 export function toUpperCase(s: String): String => to_upper_loop(s, 0, s.length(), "");
 
 // 7. Splitting & Joining
-export function split(s: String, delimiter: String): [String] => modus_str_split(String.toCString(s), String.toCString(delimiter));
+function split_chars(s: String, idx: i64, s_len: i64, b: ArrayBuilder(String)): [String] {
+    if (idx >= s_len) {
+        return b.build();
+    } else {
+        let one_char: String = substring(s, idx, idx + 1);
+        return split_chars(s, idx + 1, s_len, b.push(one_char));
+    }
+}
+
+function split_loop(s: String, delim: String, start: i64, s_len: i64, delim_len: i64, b: ArrayBuilder(String)): [String] {
+    let next_match: i64 = indexOfFrom(s, delim, start);
+    if (next_match < 0) {
+        let piece: String = substring(s, start, s_len);
+        return b.push(piece).build();
+    } else {
+        let piece: String = substring(s, start, next_match);
+        return split_loop(s, delim, next_match + delim_len, s_len, delim_len, b.push(piece));
+    }
+}
+
+export function split(s: String, delimiter: String): [String] {
+    let s_len: i64 = s.length();
+    let delim_len: i64 = delimiter.length();
+    if (s_len == 0) {
+        if (delim_len == 0) {
+            return [];
+        } else {
+            return [""];
+        }
+    } else if (delim_len == 0) {
+        return split_chars(s, 0, s_len, ArrayBuilder.withCapacity(s_len));
+    } else {
+        return split_loop(s, delimiter, 0, s_len, delim_len, ArrayBuilder.new());
+    }
+}
 
 function join_loop(parts: [String], delimiter: String, len: i64, idx: i64, acc: String): String {
     if (idx >= len) {

@@ -206,8 +206,30 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_ptr_to_int(rhs.into_pointer_value(), self.context.i64_type(), "ptri")
                 .unwrap();
             self.compile_binary_op(op, l.into(), r.into())
+        } else if lhs.is_pointer_value() && rhs.is_int_value() {
+            let l = self
+                .builder
+                .build_ptr_to_int(
+                    lhs.into_pointer_value(),
+                    rhs.into_int_value().get_type(),
+                    "ptri",
+                )
+                .unwrap();
+            self.compile_binary_op(op, l.into(), rhs)
+        } else if lhs.is_int_value() && rhs.is_pointer_value() {
+            let r = self
+                .builder
+                .build_ptr_to_int(
+                    rhs.into_pointer_value(),
+                    lhs.into_int_value().get_type(),
+                    "ptri",
+                )
+                .unwrap();
+            self.compile_binary_op(op, lhs, r.into())
         } else {
-            Err("Mismatched or unsupported binary operand types".to_string())
+            Err(format!(
+                "Mismatched or unsupported binary operand types: lhs={lhs:?}, rhs={rhs:?}, op={op:?}"
+            ))
         }
     }
 

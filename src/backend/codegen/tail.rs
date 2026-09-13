@@ -8,6 +8,7 @@ use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::BasicMetadataValueEnum;
+use std::collections::BTreeMap;
 
 impl<'ctx> CodeGen<'ctx> {
     /// Compiles an ANF block terminator.
@@ -23,6 +24,10 @@ impl<'ctx> CodeGen<'ctx> {
 
             AnfTail::TailCall { callee, args } => {
                 if let Atom::Var(name) = callee {
+                    if let Some(&tag) = self.union_variants.get(name) {
+                        let val = self.build_variant_constructor(tag, args)?;
+                        return self.build_typed_return(Some(val));
+                    }
                     if name == "Ok" || name == "Some" {
                         let val = self.build_variant_constructor(0, args)?;
                         return self.build_typed_return(Some(val));
@@ -56,7 +61,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 .ptr_type(AddressSpace::default())
                                 .fn_type(&param_tys, false);
                             let f = self.module.add_function(name, fn_ty, None);
-                            f.set_call_conventions(8);
+                            let is_main = name == "main";
+                            let is_exported_lib =
+                                self.is_lib_entry && name.starts_with("_modus_M_");
+                            let call_conv = if is_main || is_exported_lib { 0 } else { 8 };
+                            f.set_call_conventions(call_conv);
                             self.functions.insert(name.clone(), f);
                             f
                         }
@@ -178,18 +187,23 @@ impl<'ctx> CodeGen<'ctx> {
                                 .build_load(self.context.i64_type(), tag_ptr, "tag")
                                 .unwrap()
                                 .into_int_value();
-                            let exp_tag_val =
-                                if variant == "Ok" || variant == "Some" || variant == "CircleShape"
-                                {
-                                    0
-                                } else if variant == "Err"
-                                    || variant == "None"
-                                    || variant == "RectShape"
-                                {
-                                    1
-                                } else {
-                                    2
-                                };
+                            let exp_tag_val = if let Some(&tag) = self.union_variants.get(variant) {
+                                tag
+                            } else if variant == "Ok"
+                                || variant == "Some"
+                                || variant == "CircleShape"
+                                || variant == "Cons"
+                            {
+                                0
+                            } else if variant == "Err"
+                                || variant == "None"
+                                || variant == "RectShape"
+                                || variant == "Nil"
+                            {
+                                1
+                            } else {
+                                2
+                            };
                             let exp_tag = self.context.i64_type().const_int(exp_tag_val, false);
                             let eq_tag = self
                                 .builder
@@ -245,6 +259,19 @@ impl<'ctx> CodeGen<'ctx> {
                                             && !args.is_empty()
                                         {
                                             Some(args[0].clone())
+                                        } else if name == "List" && variant == "Cons" {
+                                            let t_elem =
+                                                args.first().cloned().unwrap_or(Type::i64());
+                                            let mut rec = BTreeMap::new();
+                                            rec.insert("head".to_string(), t_elem.clone());
+                                            rec.insert(
+                                                "tail".to_string(),
+                                                Type::Named {
+                                                    name: "List".to_string(),
+                                                    args: vec![t_elem],
+                                                },
+                                            );
+                                            Some(Type::Record(rec))
                                         } else {
                                             None
                                         }

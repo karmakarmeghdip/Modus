@@ -1,0 +1,206 @@
+// Standard Collections Module for Modus (std:collections)
+// Pure functional higher-order data structure utilities leveraging Perceus FBIP.
+
+export type List(T) = Cons({ head: T, tail: List(T) }) | Nil;
+
+// 1. Transformations & Filtering
+
+function map_loop(T, U)(arr: [T], f: (T) => U, idx: i64, len: i64, b: ArrayBuilder(U)): [U] {
+    if (idx >= len) {
+        return b.build();
+    } else {
+        let mapped: U = f(arr[idx]);
+        return map_loop(arr, f, idx + 1, len, b.push(mapped));
+    }
+}
+
+export function map(T, U)(arr: [T], f: (T) => U): [U] {
+    let len: i64 = arr.length();
+    return map_loop(arr, f, 0, len, ArrayBuilder.withCapacity(len));
+}
+
+function filter_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64, b: ArrayBuilder(T)): [T] {
+    if (idx >= len) {
+        return b.build();
+    } else {
+        let item: T = arr[idx];
+        if (pred(item)) {
+            return filter_loop(arr, pred, idx + 1, len, b.push(item));
+        } else {
+            return filter_loop(arr, pred, idx + 1, len, b);
+        }
+    }
+}
+
+export function filter(T)(arr: [T], pred: (T) => bool): [T] {
+    return filter_loop(arr, pred, 0, arr.length(), ArrayBuilder.new());
+}
+
+// 2. Folds & Reductions
+
+function fold_loop(T, Acc)(arr: [T], f: (Acc, T) => Acc, idx: i64, len: i64, acc: Acc): Acc {
+    if (idx >= len) {
+        return acc;
+    } else {
+        return fold_loop(arr, f, idx + 1, len, f(acc, arr[idx]));
+    }
+}
+
+export function fold(T, Acc)(arr: [T], initial: Acc, f: (Acc, T) => Acc): Acc {
+    return fold_loop(arr, f, 0, arr.length(), initial);
+}
+
+function reduce_loop(T)(arr: [T], f: (T, T) => T, idx: i64, len: i64, acc: T): T {
+    if (idx >= len) {
+        return acc;
+    } else {
+        return reduce_loop(arr, f, idx + 1, len, f(acc, arr[idx]));
+    }
+}
+
+export function reduce(T)(arr: [T], f: (T, T) => T): Option(T) {
+    let len: i64 = arr.length();
+    if (len == 0) {
+        return Option.None;
+    } else {
+        let first: T = arr[0];
+        let res: T = reduce_loop(arr, f, 1, len, first);
+        return Option.Some(res);
+    }
+}
+
+// 3. Search & Queries
+
+function find_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64): Option(T) {
+    if (idx >= len) {
+        return Option.None;
+    } else if (pred(arr[idx])) {
+        return Option.Some(arr[idx]);
+    } else {
+        return find_loop(arr, pred, idx + 1, len);
+    }
+}
+
+export function find(T)(arr: [T], pred: (T) => bool): Option(T) {
+    return find_loop(arr, pred, 0, arr.length());
+}
+
+function find_index_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64): i64 {
+    if (idx >= len) {
+        return -1;
+    } else if (pred(arr[idx])) {
+        return idx;
+    } else {
+        return find_index_loop(arr, pred, idx + 1, len);
+    }
+}
+
+export function findIndex(T)(arr: [T], pred: (T) => bool): i64 {
+    return find_index_loop(arr, pred, 0, arr.length());
+}
+
+function any_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64): bool {
+    if (idx >= len) {
+        return false;
+    } else if (pred(arr[idx])) {
+        return true;
+    } else {
+        return any_loop(arr, pred, idx + 1, len);
+    }
+}
+
+export function any(T)(arr: [T], pred: (T) => bool): bool {
+    return any_loop(arr, pred, 0, arr.length());
+}
+
+function all_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64): bool {
+    if (idx >= len) {
+        return true;
+    } else if (!pred(arr[idx])) {
+        return false;
+    } else {
+        return all_loop(arr, pred, idx + 1, len);
+    }
+}
+
+export function all(T)(arr: [T], pred: (T) => bool): bool {
+    return all_loop(arr, pred, 0, arr.length());
+}
+
+// 4. Slicing, Splicing & Ordering
+
+function slice_loop(T)(arr: [T], idx: i64, end_idx: i64, b: ArrayBuilder(T)): [T] {
+    if (idx >= end_idx) {
+        return b.build();
+    } else {
+        return slice_loop(arr, idx + 1, end_idx, b.push(arr[idx]));
+    }
+}
+
+export function slice(T)(arr: [T], start: i64, count: i64): [T] {
+    let len: i64 = arr.length();
+    let actual_start: i64 = if (start < 0) { 0 } else if (start > len) { len } else { start };
+    let end_idx: i64 = if (actual_start + count > len) { len } else if (count < 0) { actual_start } else { actual_start + count };
+    let actual_count: i64 = end_idx - actual_start;
+    return slice_loop(arr, actual_start, end_idx, ArrayBuilder.withCapacity(actual_count));
+}
+
+function append_loop(T)(arr: [T], idx: i64, len: i64, b: ArrayBuilder(T)): ArrayBuilder(T) {
+    if (idx >= len) {
+        return b;
+    } else {
+        return append_loop(arr, idx + 1, len, b.push(arr[idx]));
+    }
+}
+
+export function concat(T)(arr1: [T], arr2: [T]): [T] {
+    let len1: i64 = arr1.length();
+    let len2: i64 = arr2.length();
+    let b: ArrayBuilder(T) = ArrayBuilder.withCapacity(len1 + len2);
+    let b1: ArrayBuilder(T) = append_loop(arr1, 0, len1, b);
+    let b2: ArrayBuilder(T) = append_loop(arr2, 0, len2, b1);
+    return b2.build();
+}
+
+function reverse_loop(T)(arr: [T], idx: i64, b: ArrayBuilder(T)): [T] {
+    if (idx < 0) {
+        return b.build();
+    } else {
+        return reverse_loop(arr, idx - 1, b.push(arr[idx]));
+    }
+}
+
+export function reverse(T)(arr: [T]): [T] {
+    let len: i64 = arr.length();
+    if (len == 0) {
+        return [];
+    } else {
+        return reverse_loop(arr, len - 1, ArrayBuilder.withCapacity(len));
+    }
+}
+
+// 5. Persistent Linked List
+
+function to_list_loop(T)(arr: [T], idx: i64, acc: List(T)): List(T) {
+    if (idx < 0) {
+        return acc;
+    } else {
+        let node: List(T) = List.Cons({ head: arr[idx], tail: acc });
+        return to_list_loop(arr, idx - 1, node);
+    }
+}
+
+export function toList(T)(arr: [T]): List(T) {
+    return to_list_loop(arr, arr.length() - 1, List.Nil);
+}
+
+function to_array_loop(T)(curr: List(T), b: ArrayBuilder(T)): [T] {
+    match curr {
+        List.Cons(cell) => to_array_loop(cell.tail, b.push(cell.head)),
+        List.Nil => b.build(),
+    }
+}
+
+export function toArray(T)(list: List(T)): [T] {
+    return to_array_loop(list, ArrayBuilder.new());
+}

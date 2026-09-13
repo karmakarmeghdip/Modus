@@ -18,6 +18,7 @@ pub struct TypeInferrer<'a> {
     pub subst: Substitution,
     pub effect_ctx: Option<EffectContext>,
     pub generic_bounds: HashMap<String, String>,
+    pub generics_in_scope: Vec<String>,
 }
 
 impl<'a> TypeInferrer<'a> {
@@ -28,11 +29,16 @@ impl<'a> TypeInferrer<'a> {
             subst: Substitution::new(),
             effect_ctx,
             generic_bounds: HashMap::new(),
+            generics_in_scope: Vec::new(),
         }
     }
 
     pub fn set_generic_bounds(&mut self, bounds: HashMap<String, String>) {
         self.generic_bounds = bounds;
+    }
+
+    pub fn set_generics_in_scope(&mut self, generics: Vec<String>) {
+        self.generics_in_scope = generics;
     }
 
     pub(crate) fn expand_type(&self, ty: &Type) -> Type {

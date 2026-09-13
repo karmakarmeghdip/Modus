@@ -33,9 +33,11 @@ impl<'a> TypeInferrer<'a> {
                     initializer,
                 } => {
                     let var_ty = if let Some(type_ann) = ty {
-                        let declared_ty =
-                            self.env
-                                .resolve_ast_type(&type_ann.node, &[], Some(type_ann.span))?;
+                        let declared_ty = self.env.resolve_ast_type(
+                            &type_ann.node,
+                            &self.generics_in_scope,
+                            Some(type_ann.span),
+                        )?;
                         self.check_expr(initializer, &declared_ty)?;
                         declared_ty
                     } else {

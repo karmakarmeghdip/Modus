@@ -246,11 +246,14 @@ impl ClosureConvertCtx {
                 self.global_names.insert(lambda_name.clone());
 
                 if free_vars.is_empty() {
-                    // No captured variables: plain lifted function
+                    // No captured variables: lifted function with unused _env pointer parameter
+                    let mut lifted_params = vec![("_env".to_string(), Type::pointer(Type::u8()))];
+                    lifted_params.extend(params.clone());
+
                     let lifted_fn = AnfFunction {
                         name: lambda_name.clone(),
                         type_params: Vec::new(),
-                        params: params.clone(),
+                        params: lifted_params,
                         return_type: return_type.clone(),
                         body: converted_body,
                         is_effectful: return_type.is_io(),

@@ -17,6 +17,7 @@ pub struct DesugaredExternFunction {
     pub param_types: Vec<Type>,
     pub return_type: Type,
     pub is_effectful: bool,
+    pub is_c_abi: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

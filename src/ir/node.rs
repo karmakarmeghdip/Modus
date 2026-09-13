@@ -477,6 +477,7 @@ pub struct AnfExternFunction {
     pub param_types: Vec<Type>,
     pub return_type: Type,
     pub is_effectful: bool,
+    pub is_c_abi: bool,
 }
 
 /// A complete Modus program in ANF IR.

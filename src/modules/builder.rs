@@ -203,6 +203,17 @@ pub fn compile_module_to_object_with_ident(
     output_obj: &Path,
     module_ident: &str,
 ) -> Result<(), String> {
+    compile_module_to_object_with_options(node, env, output_obj, module_ident, false)
+}
+
+/// Compiles a single AST module node into an object file (.o) with options including library entrypoint mode.
+pub fn compile_module_to_object_with_options(
+    node: &ModuleNode,
+    env: &Environment,
+    output_obj: &Path,
+    module_ident: &str,
+    is_lib_entry: bool,
+) -> Result<(), String> {
     let desugared = crate::desugar::desugar_program(&node.program, env);
     let mut anf = crate::ir::lower_program(&desugared);
     crate::ir::convert_closures(&mut anf);
@@ -210,6 +221,7 @@ pub fn compile_module_to_object_with_ident(
 
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, module_ident);
+    codegen.is_lib_entry = is_lib_entry;
     codegen.compile_program(&anf)?;
     codegen.optimize(None)?;
     codegen.compile_to_object(output_obj)?;
@@ -266,7 +278,7 @@ pub fn build_shared_library(
             &node.id.module_ident()
         };
         let obj_path = temp_dir.join(format!("{}.o", obj_ident));
-        compile_module_to_object_with_ident(node, env, &obj_path, obj_ident)?;
+        compile_module_to_object_with_options(node, env, &obj_path, obj_ident, is_root)?;
         obj_files.push(obj_path);
     }
 

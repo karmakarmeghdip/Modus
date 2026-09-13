@@ -133,9 +133,11 @@ impl<'a> TypeInferrer<'a> {
                 self.env.enter_scope();
                 for (param, exp_ty) in params.iter().zip(exp_params.iter()) {
                     let p_ty = if param.ty.node != ast::Type::Unit {
-                        let resolved =
-                            self.env
-                                .resolve_ast_type(&param.ty.node, &[], Some(param.ty.span))?;
+                        let resolved = self.env.resolve_ast_type(
+                            &param.ty.node,
+                            &self.generics_in_scope,
+                            Some(param.ty.span),
+                        )?;
                         self.unify(&resolved, exp_ty, Some(param.ty.span))?;
                         resolved
                     } else {
@@ -145,9 +147,11 @@ impl<'a> TypeInferrer<'a> {
                 }
 
                 let ret_ty = if let Some(ret_ann) = return_type {
-                    let ann_ty =
-                        self.env
-                            .resolve_ast_type(&ret_ann.node, &[], Some(ret_ann.span))?;
+                    let ann_ty = self.env.resolve_ast_type(
+                        &ret_ann.node,
+                        &self.generics_in_scope,
+                        Some(ret_ann.span),
+                    )?;
                     self.unify(&ann_ty, exp_ret, Some(ret_ann.span))?;
                     ann_ty
                 } else {
