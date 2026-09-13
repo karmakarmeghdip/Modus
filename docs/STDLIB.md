@@ -132,24 +132,45 @@ This document specifies the architecture, implemented components, and forward-lo
   - `exists(path: String): IO(bool)`: Tests whether path exists.
   - `metadata(path: String): IO(Result(FileMetadata, IOError))`: Inspects file size, type (file vs directory), and modification timestamp.
 
+### 2.5 `std:env` Module (Environment & Path Inspection)
+- **Import Path**: `import { ... } from "std:env";`
+- **Data Types**:
+  - `type IOError = { code: i32, message: String };`
+- **Environment Operations**:
+  - `getEnv(key: String): IO(Result(String, IOError))`: Retrieves the value of an environment variable.
+  - `setEnv(key: String, value: String): IO(Result(void, IOError))`: Sets or updates an environment variable.
+  - `removeEnv(key: String): IO(Result(void, IOError))`: Unsets an environment variable.
+- **Working Directory & Executable Path**:
+  - `currentDir(): IO(Result(String, IOError))`: Returns current working directory.
+  - `setCurrentDir(path: String): IO(Result(void, IOError))`: Changes current working directory.
+  - `tempDir(): IO(String)`: Returns system temporary directory (inspects `TMPDIR`, `TMP`, `TEMP`, defaults to `/tmp`).
+  - `currentExe(): IO(Result(String, IOError))`: Returns the path of the currently executing binary via `/proc/self/exe`.
+
+### 2.6 `std:process` Module (Process Lifecycle & Metadata)
+- **Import Path**: `import { ... } from "std:process";`
+- **Process Metadata**:
+  - `pid(): IO(i32)`: Returns current process ID.
+  - `parentPid(): IO(i32)`: Returns parent process ID.
+- **Process Termination**:
+  - `exit(code: i32): IO(void)`: Terminates process immediately with the specified exit code.
+  - `abort(): IO(void)`: Aborts process abnormally.
+
 ---
 
 ## 3. Standard Library Roadmap: What to Build Next
 
 ```mermaid
 flowchart TD
-    subgraph Foundation["1. Foundation & Core I/O (Completed)"]
+    subgraph Foundation["1. Foundation, Core I/O & Environment (Completed)"]
         FFI["Raw C FFI & Pointers"]
         SHOW["Show Trait & String Templating"]
         IO["std:io (Console & Descriptors)"]
         FS["std:fs (Filesystem & Directory APIs)"]
+        ENV["std:env (Environment, CWD, Exe Path)"]
+        PROC["std:process (PID, Exit, Abort)"]
     end
 
-    subgraph Phase1b["Phase 1b: System Environment (Next)"]
-        ENV["std:env & std:process (Args, Env, Exit)"]
-    end
-
-    subgraph Phase2["Phase 2: Fundamental Utilities"]
+    subgraph Phase2["Phase 2: Fundamental Utilities (Next Priority)"]
         STR["std:string (Pure String Manipulation)"]
         MATH["std:math (Pure Math & Constants)"]
         TIME["std:time (Durations, Sleep, Clocks)"]
@@ -166,8 +187,7 @@ flowchart TD
         STANDALONE["Standalone 'modus-std' Package & Distribution"]
     end
 
-    Foundation --> Phase1b
-    Phase1b --> Phase2
+    Foundation --> Phase2
     Phase2 --> Phase3
     Phase3 --> Phase4
 ```
@@ -286,16 +306,18 @@ To strip these helpers and move all standard library code to pure Modus, the fol
 
 ---
 
-## 4. Implementation Strategy: Next Phase (`std:env` & `std:process` and Decoupling Prep)
+## 4. Implementation Strategy: Next Phase (Phase 2: `std:string` & `std:math`)
 
-1. **Pure FFI Implementation for Environment & Process**:
-   - Bind `getenv`, `setenv`, `getcwd`, `chdir`, `exit`, `getpid` directly via `extern "C"` declarations in `stdlib/env.mds` and `stdlib/process.mds`.
-   - Avoid introducing any new helper functions into `src/backend/runtime.rs`.
-2. **`args()` Vector Construction**:
-   - Read `argc` and `argv` (passed from entry point or via platform getters) using pointer arithmetic in pure Modus.
-3. **Virtual Module Registration**:
-   - Register `"std:env"` and `"std:process"` in `src/modules/stdlib.rs`.
-4. **Decoupling Validation**:
-   - Keep runtime shims minimal and prepare the foundation for Phase 4 compiler decoupling.
-5. **Testing**:
-   - Comprehensive test suite in `tests/stdlib_env_tests.rs` and `tests/stdlib_process_tests.rs` covering argument inspection, environment variables, working directory changes, and process metadata.
+1. **`std:string` Implementation**:
+   - Pure string manipulation routines: `trim`, `startsWith`, `endsWith`, `contains`, `substring`, `split`, `join`.
+   - String parsing utilities: `parseInt`, `parseFloat`.
+   - String transformation and character inspection.
+2. **`std:math` Implementation**:
+   - Pure mathematical functions (`abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil`, `round`).
+   - Trigonometric operations (`sin`, `cos`, `tan`, `asin`, `acos`, `atan`).
+   - Floating-point constants (`PI`, `E`, `TAU`).
+   - All implemented with zero runtime overhead using standard C math library (`libm`) bindings and LLVM intrinsics.
+3. **Decoupling Discipline**:
+   - Preserve zero new additions to `runtime.rs`; all standard library utilities remain pure Modus or pure libc bindings.
+4. **Testing**:
+   - Verification through `tests/stdlib_string_tests.rs` and `tests/stdlib_math_tests.rs` across JIT and AOT targets.

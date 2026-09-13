@@ -84,6 +84,8 @@ pub fn resolve_import(
 
 static STD_IO_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
 static STD_FS_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
+static STD_ENV_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
+static STD_PROCESS_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
 
 /// Computes or retrieves the static ModuleInterface for `std:io`.
 pub fn get_std_io_interface() -> Result<ModuleInterface, String> {
@@ -115,6 +117,41 @@ pub fn get_std_fs_interface() -> Result<ModuleInterface, String> {
         .clone()
 }
 
+/// Computes or retrieves the static ModuleInterface for `std:env`.
+pub fn get_std_env_interface() -> Result<ModuleInterface, String> {
+    STD_ENV_INTERFACE
+        .get_or_init(|| {
+            let prog = parse_program(crate::modules::stdlib::STD_ENV_SOURCE)
+                .map_err(|e| format!("Failed to parse std:env: {e:?}"))?;
+            let mut env = Environment::new();
+            check_program_with_env(&prog, &mut env)
+                .map_err(|e| format!("Failed to typecheck std:env: {e:?}"))?;
+            ModuleInterface::extract(ModuleId::new(PathBuf::from("std:env")), &prog, &env, None)
+                .map_err(|e| format!("Failed to extract std:env interface: {e:?}"))
+        })
+        .clone()
+}
+
+/// Computes or retrieves the static ModuleInterface for `std:process`.
+pub fn get_std_process_interface() -> Result<ModuleInterface, String> {
+    STD_PROCESS_INTERFACE
+        .get_or_init(|| {
+            let prog = parse_program(crate::modules::stdlib::STD_PROCESS_SOURCE)
+                .map_err(|e| format!("Failed to parse std:process: {e:?}"))?;
+            let mut env = Environment::new();
+            check_program_with_env(&prog, &mut env)
+                .map_err(|e| format!("Failed to typecheck std:process: {e:?}"))?;
+            ModuleInterface::extract(
+                ModuleId::new(PathBuf::from("std:process")),
+                &prog,
+                &env,
+                None,
+            )
+            .map_err(|e| format!("Failed to extract std:process interface: {e:?}"))
+        })
+        .clone()
+}
+
 /// Loads or compiles the ModuleInterface for a resolved module.
 pub fn load_module_interface(
     resolved: &ResolvedImport,
@@ -127,6 +164,10 @@ pub fn load_module_interface(
                 get_std_io_interface()
             } else if std_name == "std:fs" {
                 get_std_fs_interface()
+            } else if std_name == "std:env" {
+                get_std_env_interface()
+            } else if std_name == "std:process" {
+                get_std_process_interface()
             } else {
                 Err(format!("Unknown standard library module '{std_name}'"))
             }

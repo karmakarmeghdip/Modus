@@ -174,6 +174,16 @@ fn goto_symbol_in_imported_module(
                 (crate::modules::stdlib::STD_IO_SOURCE, "modus://std/io.mds")
             } else if std_name == "std:fs" {
                 (crate::modules::stdlib::STD_FS_SOURCE, "modus://std/fs.mds")
+            } else if std_name == "std:env" {
+                (
+                    crate::modules::stdlib::STD_ENV_SOURCE,
+                    "modus://std/env.mds",
+                )
+            } else if std_name == "std:process" {
+                (
+                    crate::modules::stdlib::STD_PROCESS_SOURCE,
+                    "modus://std/process.mds",
+                )
             } else {
                 return None;
             };

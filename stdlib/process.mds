@@ -1,0 +1,23 @@
+// Standard Process Module for Modus (std:process)
+
+extern "C" {
+    function getpid(): IO(i32);
+    function getppid(): IO(i32);
+}
+
+export extern "C" {
+    function exit(status: i32): IO(void);
+    function abort(): IO(void);
+}
+
+/// Returns the current process ID.
+export function pid(): IO(i32) {
+    let p: i32 = perform getpid();
+    return p;
+}
+
+/// Returns the parent process ID.
+export function parentPid(): IO(i32) {
+    let p: i32 = perform getppid();
+    return p;
+}
