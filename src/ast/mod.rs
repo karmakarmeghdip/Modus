@@ -133,6 +133,7 @@ pub struct FunctionDecl {
     pub return_type: Option<Spanned<Type>>,
     pub body: Option<FunctionBody>,
     pub is_exported: bool,
+    pub symbol_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

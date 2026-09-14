@@ -79,6 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ExecutionResult::Bool(v) => {
                     println!("Result (bool): {v} (executed in {elapsed:.2?})")
                 }
+                ExecutionResult::String(v) => {
+                    println!("Result (string): \"{v}\" (executed in {elapsed:.2?})")
+                }
                 ExecutionResult::Void => {
                     println!("Execution completed (void) in {elapsed:.2?}")
                 }

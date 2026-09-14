@@ -10,38 +10,275 @@ export function SQRT1_2(): f64 => 0.7071067811865476;
 export function SQRT2(): f64 => 1.4142135623730951;
 export function TAU(): f64 => 6.283185307179586;
 
-export extern "C" {
-    function sqrt(x: f64): f64;
-    function cbrt(x: f64): f64;
-    function exp(x: f64): f64;
-    function expm1(x: f64): f64;
-    function log(x: f64): f64;
-    function log10(x: f64): f64;
-    function log2(x: f64): f64;
-    function log1p(x: f64): f64;
-    function pow(base: f64, exp: f64): f64;
-    function sin(x: f64): f64;
-    function cos(x: f64): f64;
-    function tan(x: f64): f64;
-    function asin(x: f64): f64;
-    function acos(x: f64): f64;
-    function atan(x: f64): f64;
-    function atan2(y: f64, x: f64): f64;
-    function sinh(x: f64): f64;
-    function cosh(x: f64): f64;
-    function tanh(x: f64): f64;
-    function asinh(x: f64): f64;
-    function acosh(x: f64): f64;
-    function atanh(x: f64): f64;
-    function floor(x: f64): f64;
-    function ceil(x: f64): f64;
-    function round(x: f64): f64;
-    function trunc(x: f64): f64;
-    function hypot(x: f64, y: f64): f64;
+// 1. Core Transcendental & Algebraic Functions (Pure Modus)
+
+export function trunc(x: f64): f64 => (x as i64) as f64;
+
+export function floor(x: f64): f64 {
+    let t: f64 = (x as i64) as f64;
+    if (x < 0.0 && x != t) {
+        return t - 1.0;
+    } else {
+        return t;
+    }
 }
 
+export function ceil(x: f64): f64 {
+    let t: f64 = (x as i64) as f64;
+    if (x > 0.0 && x != t) {
+        return t + 1.0;
+    } else {
+        return t;
+    }
+}
+
+export function round(x: f64): f64 => floor(x + 0.5);
+
+function sqrt_iter(x: f64, guess: f64, iter: i32): f64 {
+    if (iter <= 0) {
+        return guess;
+    } else {
+        let next_guess: f64 = 0.5 * (guess + x / guess);
+        return sqrt_iter(x, next_guess, iter - 1);
+    }
+}
+
+export function sqrt(x: f64): f64 {
+    if (x <= 0.0) {
+        return 0.0;
+    } else {
+        let initial: f64 = if (x >= 1.0) { x / 2.0 } else { 1.0 };
+        return sqrt_iter(x, initial, 25);
+    }
+}
+
+function cbrt_iter(x: f64, guess: f64, iter: i32): f64 {
+    if (iter <= 0) {
+        return guess;
+    } else {
+        let next_guess: f64 = (2.0 * guess + x / (guess * guess)) / 3.0;
+        return cbrt_iter(x, next_guess, iter - 1);
+    }
+}
+
+export function cbrt(x: f64): f64 {
+    if (x == 0.0) {
+        return 0.0;
+    } else if (x < 0.0) {
+        return -cbrt(-x);
+    } else {
+        let initial: f64 = if (x >= 1.0) { x / 3.0 } else { 1.0 };
+        return cbrt_iter(x, initial, 25);
+    }
+}
+
+export function hypot(x: f64, y: f64): f64 => sqrt(x * x + y * y);
+
+function exp_poly(y: f64): f64 {
+    let term1: f64 = 1.0 + y / 12.0;
+    let term2: f64 = 1.0 + y / 11.0 * term1;
+    let term3: f64 = 1.0 + y / 10.0 * term2;
+    let term4: f64 = 1.0 + y / 9.0 * term3;
+    let term5: f64 = 1.0 + y / 8.0 * term4;
+    let term6: f64 = 1.0 + y / 7.0 * term5;
+    let term7: f64 = 1.0 + y / 6.0 * term6;
+    let term8: f64 = 1.0 + y / 5.0 * term7;
+    let term9: f64 = 1.0 + y / 4.0 * term8;
+    let term10: f64 = 1.0 + y / 3.0 * term9;
+    let term11: f64 = 1.0 + y / 2.0 * term10;
+    return 1.0 + y * term11;
+}
+
+function square_n(val: f64, n: i32): f64 {
+    if (n <= 0) {
+        return val;
+    } else {
+        return square_n(val * val, n - 1);
+    }
+}
+
+export function exp(x: f64): f64 {
+    if (x < 0.0) {
+        return 1.0 / exp(-x);
+    } else if (x == 0.0) {
+        return 1.0;
+    } else {
+        let y: f64 = x / 64.0;
+        let poly: f64 = exp_poly(y);
+        return square_n(poly, 6);
+    }
+}
+
+export function expm1(x: f64): f64 => exp(x) - 1.0;
+
+function log_reduce_div(x: f64, k: f64): { x: f64, k: f64 } {
+    if (x > 2.0) {
+        return log_reduce_div(x / 2.718281828459045, k + 1.0);
+    } else {
+        return { x: x, k: k };
+    }
+}
+
+function log_reduce_mul(x: f64, k: f64): { x: f64, k: f64 } {
+    if (x < 0.5) {
+        return log_reduce_mul(x * 2.718281828459045, k - 1.0);
+    } else {
+        return { x: x, k: k };
+    }
+}
+
+function log_iter(x: f64, guess: f64, iter: i32): f64 {
+    if (iter <= 0) {
+        return guess;
+    } else {
+        let eg: f64 = exp(guess);
+        let next_guess: f64 = guess + 2.0 * (x - eg) / (x + eg);
+        return log_iter(x, next_guess, iter - 1);
+    }
+}
+
+export function log(x: f64): f64 {
+    if (x <= 0.0) {
+        return 0.0;
+    } else if (x > 2.0) {
+        let r = log_reduce_div(x, 0.0);
+        let l: f64 = log_iter(r.x, r.x - 1.0, 6);
+        return l + r.k;
+    } else if (x < 0.5) {
+        let r = log_reduce_mul(x, 0.0);
+        let l: f64 = log_iter(r.x, r.x - 1.0, 6);
+        return l + r.k;
+    } else {
+        return log_iter(x, x - 1.0, 6);
+    }
+}
+
+export function log10(x: f64): f64 => log(x) / LN10();
+export function log2(x: f64): f64 => log(x) / LN2();
+export function log1p(x: f64): f64 => log(1.0 + x);
+
+function int_pow(base: f64, exp_i: i64): f64 {
+    if (exp_i == 0) {
+        return 1.0;
+    } else if (exp_i == 1) {
+        return base;
+    } else if (exp_i % 2 == 0) {
+        let half: f64 = int_pow(base, exp_i / 2);
+        return half * half;
+    } else {
+        return base * int_pow(base, exp_i - 1);
+    }
+}
+
+export function pow(base: f64, exp_val: f64): f64 {
+    if (exp_val == 0.0) {
+        return 1.0;
+    } else if (base == 0.0) {
+        return 0.0;
+    } else {
+        let exp_i: i64 = exp_val as i64;
+        if ((exp_i as f64) == exp_val) {
+            if (exp_i < 0) {
+                return 1.0 / int_pow(base, -exp_i);
+            } else {
+                return int_pow(base, exp_i);
+            }
+        } else {
+            return exp(exp_val * log(base));
+        }
+    }
+}
+
+function sin_poly(x: f64): f64 {
+    let x2: f64 = x * x;
+    return x * (1.0 - x2 / 6.0 * (1.0 - x2 / 20.0 * (1.0 - x2 / 42.0 * (1.0 - x2 / 72.0 * (1.0 - x2 / 110.0 * (1.0 - x2 / 156.0))))));
+}
+
+function cos_poly(x: f64): f64 {
+    let x2: f64 = x * x;
+    return 1.0 - x2 / 2.0 * (1.0 - x2 / 12.0 * (1.0 - x2 / 30.0 * (1.0 - x2 / 56.0 * (1.0 - x2 / 90.0 * (1.0 - x2 / 132.0)))));
+}
+
+function normalize_angle(x: f64): f64 {
+    let tau: f64 = TAU();
+    let pi: f64 = PI();
+    let rem: f64 = x - tau * floor(x / tau);
+    if (rem > pi) {
+        return rem - tau;
+    } else if (rem < -pi) {
+        return rem + tau;
+    } else {
+        return rem;
+    }
+}
+
+export function sin(x: f64): f64 {
+    let norm: f64 = normalize_angle(x);
+    return sin_poly(norm);
+}
+
+export function cos(x: f64): f64 {
+    let norm: f64 = normalize_angle(x);
+    return cos_poly(norm);
+}
+
+export function tan(x: f64): f64 => sin(x) / cos(x);
+
+function atan_poly(x: f64): f64 {
+    let x2: f64 = x * x;
+    return x * (1.0 - x2 / 3.0 * (1.0 - 3.0 / 5.0 * x2 * (1.0 - 5.0 / 7.0 * x2 * (1.0 - 7.0 / 9.0 * x2 * (1.0 - 9.0 / 11.0 * x2)))));
+}
+
+export function atan(x: f64): f64 {
+    let pi: f64 = PI();
+    if (x > 1.0) {
+        return pi / 2.0 - atan_poly(1.0 / x);
+    } else if (x < -1.0) {
+        return -pi / 2.0 - atan_poly(1.0 / x);
+    } else {
+        return atan_poly(x);
+    }
+}
+
+export function atan2(y: f64, x: f64): f64 {
+    let pi: f64 = PI();
+    if (x > 0.0) {
+        return atan(y / x);
+    } else if (x < 0.0 && y >= 0.0) {
+        return atan(y / x) + pi;
+    } else if (x < 0.0 && y < 0.0) {
+        return atan(y / x) - pi;
+    } else if (x == 0.0 && y > 0.0) {
+        return pi / 2.0;
+    } else if (x == 0.0 && y < 0.0) {
+        return -pi / 2.0;
+    } else {
+        return 0.0;
+    }
+}
+
+export function asin(x: f64): f64 {
+    if (x >= 1.0) {
+        return PI() / 2.0;
+    } else if (x <= -1.0) {
+        return -PI() / 2.0;
+    } else {
+        return atan2(x, sqrt(1.0 - x * x));
+    }
+}
+
+export function acos(x: f64): f64 => PI() / 2.0 - asin(x);
+
+export function sinh(x: f64): f64 => (exp(x) - exp(-x)) / 2.0;
+export function cosh(x: f64): f64 => (exp(x) + exp(-x)) / 2.0;
+export function tanh(x: f64): f64 => sinh(x) / cosh(x);
+export function asinh(x: f64): f64 => log(x + sqrt(x * x + 1.0));
+export function acosh(x: f64): f64 => log(x + sqrt(x * x - 1.0));
+export function atanh(x: f64): f64 => 0.5 * log((1.0 + x) / (1.0 - x));
+
+export function fabs(x: f64): f64 => if (x < 0.0) { -x } else { x };
+
 extern "C" {
-    function fabs(x: f64): f64;
     function drand48(): IO(f64);
 }
 

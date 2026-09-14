@@ -98,9 +98,11 @@ impl ModuleInterface {
                     if let Some(sig) = env.lookup_function(local_name) {
                         let mut exported_sig = sig.clone();
                         exported_sig.name = export_name.clone();
-                        let mangled =
-                            crate::modules::mangling::mangle_symbol(&module_ident, export_name);
-                        exported_sig.symbol_name = Some(mangled);
+                        if !exported_sig.is_c_abi {
+                            let mangled =
+                                crate::modules::mangling::mangle_symbol(&module_ident, export_name);
+                            exported_sig.symbol_name = Some(mangled);
+                        }
                         exported_functions.insert(export_name.clone(), exported_sig);
                         found = true;
                     }

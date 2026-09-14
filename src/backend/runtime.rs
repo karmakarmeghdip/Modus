@@ -6,21 +6,20 @@
 //! - `modus_inc_ref`: non-atomic reference count increment
 //! - `modus_dec_ref`: inline fast-path (`sub` + `icmp eq 0` -> `free`)
 //! - `modus_is_unique`: FBIP uniqueness check (`rc == 1`)
-//! - IO stubs (`puts`, `printf`, `io_pure`)
+//! - Perceus reference counting (`modus_alloc`, `modus_inc_ref`, `modus_dec_ref`, `modus_is_unique`)
+//! - String primitives (`concat`, `eq`, `substring`, `from_c_str`, `from_char_code`)
 
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::values::{BasicValue, FunctionValue};
+use inkwell::values::FunctionValue;
 
 /// Manages runtime declarations and helper functions in an LLVM module.
 pub struct Runtime<'ctx> {
     pub context: &'ctx Context,
     pub malloc_fn: FunctionValue<'ctx>,
     pub free_fn: FunctionValue<'ctx>,
-    pub puts_fn: FunctionValue<'ctx>,
-    pub printf_fn: FunctionValue<'ctx>,
     pub strlen_fn: FunctionValue<'ctx>,
     pub memcpy_fn: FunctionValue<'ctx>,
     pub snprintf_fn: FunctionValue<'ctx>,
@@ -29,12 +28,15 @@ pub struct Runtime<'ctx> {
     pub dec_ref_fn: FunctionValue<'ctx>,
     pub is_unique_fn: FunctionValue<'ctx>,
     pub str_concat_fn: FunctionValue<'ctx>,
-    pub strcmp_fn: FunctionValue<'ctx>,
-    pub fs_read_dir_fn: FunctionValue<'ctx>,
-    pub fs_rename_fn: FunctionValue<'ctx>,
-    pub array_builder_new_fn: FunctionValue<'ctx>,
-    pub array_builder_push_fn: FunctionValue<'ctx>,
-    pub array_builder_build_fn: FunctionValue<'ctx>,
+    pub str_eq_fn: FunctionValue<'ctx>,
+    pub str_substring_fn: FunctionValue<'ctx>,
+    pub string_from_c_str_fn: FunctionValue<'ctx>,
+    pub str_from_char_code_fn: FunctionValue<'ctx>,
+    pub array_new_fn: FunctionValue<'ctx>,
+    pub array_push_fn: FunctionValue<'ctx>,
+    pub array_build_fn: FunctionValue<'ctx>,
+    pub array_set_fn: FunctionValue<'ctx>,
+    pub array_pop_fn: FunctionValue<'ctx>,
 }
 
 impl<'ctx> Runtime<'ctx> {
@@ -56,19 +58,7 @@ impl<'ctx> Runtime<'ctx> {
             module.add_function("free", fn_type, None)
         });
 
-        // 3. extern int puts(const char* str);
-        let puts_fn = module.get_function("puts").unwrap_or_else(|| {
-            let fn_type = i32_type.fn_type(&[i8_ptr.into()], false);
-            module.add_function("puts", fn_type, None)
-        });
-
-        // 4. extern int printf(const char* format, ...);
-        let printf_fn = module.get_function("printf").unwrap_or_else(|| {
-            let fn_type = i32_type.fn_type(&[i8_ptr.into()], true);
-            module.add_function("printf", fn_type, None)
-        });
-
-        // 5. extern size_t strlen(const char* str);
+        // 3. extern size_t strlen(const char* str);
         let strlen_fn = module.get_function("strlen").unwrap_or_else(|| {
             let fn_type = i64_type.fn_type(&[i8_ptr.into()], false);
             module.add_function("strlen", fn_type, None)
@@ -106,73 +96,72 @@ impl<'ctx> Runtime<'ctx> {
             .get_function("modus_is_unique")
             .unwrap_or_else(|| Self::build_is_unique_fn(context, module));
 
-        // 12. Build helper: modus_str_concat(s1: ptr, s2: ptr) -> ptr
+        // 12. extern int memcmp(const void* s1, const void* s2, size_t n);
+        let memcmp_fn = module.get_function("memcmp").unwrap_or_else(|| {
+            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into(), i64_type.into()], false);
+            module.add_function("memcmp", fn_type, None)
+        });
+
+        // 13. Build helper: modus_str_concat(s1: ptr, s2: ptr) -> ptr
         let str_concat_fn = module.get_function("modus_str_concat").unwrap_or_else(|| {
-            Self::build_str_concat_fn(context, module, malloc_fn, strlen_fn, memcpy_fn)
+            Self::build_str_concat_fn(context, module, alloc_fn, memcpy_fn, dec_ref_fn)
         });
 
-        // 13. extern int strcmp(const char* s1, const char* s2);
-        let strcmp_fn = module.get_function("strcmp").unwrap_or_else(|| {
-            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
-            module.add_function("strcmp", fn_type, None)
-        });
+        // 14. Build helper: modus_str_eq(s1: ptr, s2: ptr) -> bool
+        let str_eq_fn = module
+            .get_function("modus_str_eq")
+            .unwrap_or_else(|| Self::build_str_eq_fn(context, module, memcmp_fn));
 
-        // 14. Build helper: modus_fs_read_dir(path: ptr) -> ptr
-        let fs_read_dir_fn = module
-            .get_function("modus_fs_read_dir")
-            .unwrap_or_else(|| Self::build_fs_read_dir_fn(context, module, alloc_fn, strcmp_fn));
+        // 15. Build helper: modus_str_substring(s: ptr, start: i64, end: i64) -> ptr
+        let str_substring_fn = module
+            .get_function("modus_str_substring")
+            .unwrap_or_else(|| Self::build_str_substring_fn(context, module, alloc_fn, memcpy_fn));
 
-        // 15. Build helper: modus_fs_rename(old: ptr, new: ptr) -> i32
-        let rename_libc_fn = module.get_function("rename").unwrap_or_else(|| {
-            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
-            module.add_function("rename", fn_type, None)
-        });
-        let fs_rename_fn = module.get_function("modus_fs_rename").unwrap_or_else(|| {
-            let fn_type = i32_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
-            let func = module.add_function("modus_fs_rename", fn_type, None);
-            let b = context.create_builder();
-            let bb = context.append_basic_block(func, "entry");
-            b.position_at_end(bb);
-            let p1 = func.get_nth_param(0).unwrap();
-            let p2 = func.get_nth_param(1).unwrap();
-            let res = b
-                .build_call(rename_libc_fn, &[p1.into(), p2.into()], "call_rename")
-                .unwrap()
-                .try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_int_value();
-            let _ = b.build_return(Some(&res));
-            func
-        });
-
-        // 16. Build array builder helpers:
-        let array_builder_new_fn = module
-            .get_function("modus_array_builder_new")
-            .unwrap_or_else(|| Self::build_array_builder_new_fn(context, module, malloc_fn));
-
-        let array_builder_push_fn = module
-            .get_function("modus_array_builder_push")
+        // 16. Build helper: modus_string_from_c_str(cs: ptr) -> ptr
+        let string_from_c_str_fn = module
+            .get_function("modus_string_from_c_str")
             .unwrap_or_else(|| {
-                Self::build_array_builder_push_fn(
-                    context, module, malloc_fn, free_fn, memcpy_fn, inc_ref_fn, dec_ref_fn,
-                )
+                Self::build_string_from_c_str_fn(context, module, alloc_fn, strlen_fn, memcpy_fn)
             });
 
-        let array_builder_build_fn = module
-            .get_function("modus_array_builder_build")
-            .unwrap_or_else(|| {
-                Self::build_array_builder_build_fn(
-                    context, module, malloc_fn, memcpy_fn, inc_ref_fn, dec_ref_fn,
-                )
-            });
+        // 17. Build helper: modus_str_from_char_code(code: i32) -> ptr
+        let str_from_char_code_fn = module
+            .get_function("modus_str_from_char_code")
+            .unwrap_or_else(|| Self::build_str_from_char_code_fn(context, module, alloc_fn));
+
+        // 18. Build array helpers:
+        let array_new_fn = module
+            .get_function("modus_array_new")
+            .unwrap_or_else(|| Self::build_array_new_fn(context, module, malloc_fn));
+
+        let array_push_fn = module.get_function("modus_array_push").unwrap_or_else(|| {
+            Self::build_array_push_fn(
+                context, module, malloc_fn, free_fn, memcpy_fn, inc_ref_fn, dec_ref_fn,
+            )
+        });
+
+        let array_build_fn = module.get_function("modus_array_build").unwrap_or_else(|| {
+            Self::build_array_build_fn(
+                context, module, malloc_fn, memcpy_fn, inc_ref_fn, dec_ref_fn,
+            )
+        });
+
+        let array_set_fn = module.get_function("modus_array_set").unwrap_or_else(|| {
+            Self::build_array_set_fn(
+                context, module, malloc_fn, memcpy_fn, inc_ref_fn, dec_ref_fn,
+            )
+        });
+
+        let array_pop_fn = module.get_function("modus_array_pop").unwrap_or_else(|| {
+            Self::build_array_pop_fn(
+                context, module, malloc_fn, memcpy_fn, inc_ref_fn, dec_ref_fn,
+            )
+        });
 
         Self {
             context,
             malloc_fn,
             free_fn,
-            puts_fn,
-            printf_fn,
             strlen_fn,
             memcpy_fn,
             snprintf_fn,
@@ -181,12 +170,15 @@ impl<'ctx> Runtime<'ctx> {
             dec_ref_fn,
             is_unique_fn,
             str_concat_fn,
-            strcmp_fn,
-            fs_read_dir_fn,
-            fs_rename_fn,
-            array_builder_new_fn,
-            array_builder_push_fn,
-            array_builder_build_fn,
+            str_eq_fn,
+            str_substring_fn,
+            string_from_c_str_fn,
+            str_from_char_code_fn,
+            array_new_fn,
+            array_push_fn,
+            array_build_fn,
+            array_set_fn,
+            array_pop_fn,
         }
     }
 
@@ -226,6 +218,7 @@ impl<'ctx> Runtime<'ctx> {
 
     /// Emits `modus_inc_ref(ptr: ptr) -> void`:
     /// Non-atomic: loads i64 rc, adds 1, stores back.
+    /// If ptr is null or rc <= 0 (immortal, e.g. static string literals), skips increment.
     fn build_inc_ref_fn(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         let i8_ptr = context.ptr_type(AddressSpace::default());
         let i64_type = context.i64_type();
@@ -235,23 +228,56 @@ impl<'ctx> Runtime<'ctx> {
 
         let builder = context.create_builder();
         let entry_bb = context.append_basic_block(func, "entry");
+        let not_null_bb = context.append_basic_block(func, "not_null");
+        let inc_bb = context.append_basic_block(func, "inc");
+        let ret_bb = context.append_basic_block(func, "ret");
+
         builder.position_at_end(entry_bb);
-
         let ptr_arg = func.get_first_param().unwrap().into_pointer_value();
-        if let Ok(val) = builder.build_load(i64_type, ptr_arg, "rc") {
-            let rc = val.into_int_value();
-            if let Ok(rc_plus_1) = builder.build_int_add(rc, i64_type.const_int(1, false), "rc_inc")
-            {
-                let _ = builder.build_store(ptr_arg, rc_plus_1);
-            }
-        }
+        let ptr_int = builder
+            .build_ptr_to_int(ptr_arg, i64_type, "ptr_int")
+            .unwrap();
+        let is_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                ptr_int,
+                i64_type.const_int(0, false),
+                "is_null",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_null, ret_bb, not_null_bb);
 
+        builder.position_at_end(not_null_bb);
+        let rc = builder
+            .build_load(i64_type, ptr_arg, "rc")
+            .unwrap()
+            .into_int_value();
+        // Immortal check: if rc <= 0 (e.g. -1 for static literals), do not mutate rodata
+        let is_immortal = builder
+            .build_int_compare(
+                IntPredicate::SLE,
+                rc,
+                i64_type.const_int(0, false),
+                "is_immortal",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_immortal, ret_bb, inc_bb);
+
+        builder.position_at_end(inc_bb);
+        let rc_plus_1 = builder
+            .build_int_add(rc, i64_type.const_int(1, false), "rc_inc")
+            .unwrap();
+        let _ = builder.build_store(ptr_arg, rc_plus_1);
+        let _ = builder.build_unconditional_branch(ret_bb);
+
+        builder.position_at_end(ret_bb);
         let _ = builder.build_return(None);
         func
     }
 
     /// Emits `modus_dec_ref(ptr: ptr) -> void`:
     /// Inline fast path: `sub` + `icmp eq 0` -> `free(ptr)`.
+    /// If ptr is null or rc <= 0 (immortal, e.g. static string literals), skips decrement and free.
     fn build_dec_ref_fn(
         context: &'ctx Context,
         module: &Module<'ctx>,
@@ -265,13 +291,14 @@ impl<'ctx> Runtime<'ctx> {
 
         let builder = context.create_builder();
         let entry_bb = context.append_basic_block(func, "entry");
+        let not_null_bb = context.append_basic_block(func, "not_null");
+        let dec_bb = context.append_basic_block(func, "dec");
         let free_bb = context.append_basic_block(func, "free_block");
-        let cont_bb = context.append_basic_block(func, "cont_block");
+        let ret_bb = context.append_basic_block(func, "ret");
 
         builder.position_at_end(entry_bb);
         let ptr_arg = func.get_first_param().unwrap().into_pointer_value();
 
-        // Null check: if ptr is null, return immediately
         let is_null = builder
             .build_int_compare(
                 IntPredicate::EQ,
@@ -282,15 +309,25 @@ impl<'ctx> Runtime<'ctx> {
                 "is_null",
             )
             .unwrap();
-
-        let not_null_bb = context.append_basic_block(func, "not_null");
-        let _ = builder.build_conditional_branch(is_null, cont_bb, not_null_bb);
+        let _ = builder.build_conditional_branch(is_null, ret_bb, not_null_bb);
 
         builder.position_at_end(not_null_bb);
         let rc = builder
             .build_load(i64_type, ptr_arg, "rc")
             .unwrap()
             .into_int_value();
+        // Immortal check: if rc <= 0 (e.g. -1 for static literals), do not decrement or free
+        let is_immortal = builder
+            .build_int_compare(
+                IntPredicate::SLE,
+                rc,
+                i64_type.const_int(0, false),
+                "is_immortal",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_immortal, ret_bb, dec_bb);
+
+        builder.position_at_end(dec_bb);
         let rc_minus_1 = builder
             .build_int_sub(rc, i64_type.const_int(1, false), "rc_dec")
             .unwrap();
@@ -304,15 +341,15 @@ impl<'ctx> Runtime<'ctx> {
                 "is_zero",
             )
             .unwrap();
-        let _ = builder.build_conditional_branch(is_zero, free_bb, cont_bb);
+        let _ = builder.build_conditional_branch(is_zero, free_bb, ret_bb);
 
         // Free block: calls free(ptr)
         builder.position_at_end(free_bb);
         let _ = builder.build_call(free_fn, &[ptr_arg.into()], "");
-        let _ = builder.build_unconditional_branch(cont_bb);
+        let _ = builder.build_unconditional_branch(ret_bb);
 
-        // Cont block: return
-        builder.position_at_end(cont_bb);
+        // Ret block: return
+        builder.position_at_end(ret_bb);
         let _ = builder.build_return(None);
 
         func
@@ -350,29 +387,281 @@ impl<'ctx> Runtime<'ctx> {
     }
 
     /// Emits `modus_str_concat(s1: ptr, s2: ptr) -> ptr`:
-    /// Allocates buffer, copies s1 and s2, appends null terminator, and returns pointer.
+    /// Concatenates two Modus strings [rc | len | cap | data].
+    /// Features FBIP (Functional-But-In-Place): if s1 is unique (rc == 1) and cap - len >= len2,
+    /// appends s2 in-place without reallocation.
     fn build_str_concat_fn(
         context: &'ctx Context,
         module: &Module<'ctx>,
-        malloc_fn: FunctionValue<'ctx>,
-        strlen_fn: FunctionValue<'ctx>,
+        alloc_fn: FunctionValue<'ctx>,
         memcpy_fn: FunctionValue<'ctx>,
+        dec_ref_fn: FunctionValue<'ctx>,
     ) -> FunctionValue<'ctx> {
         let i8_ptr = context.ptr_type(AddressSpace::default());
         let i64_type = context.i64_type();
+        let i8_type = context.i8_type();
         let fn_type = i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
         let func = module.add_function("modus_str_concat", fn_type, None);
 
         let builder = context.create_builder();
         let entry_bb = context.append_basic_block(func, "entry");
-        builder.position_at_end(entry_bb);
+        let s1_load_bb = context.append_basic_block(func, "s1_load");
+        let s1_cont_bb = context.append_basic_block(func, "s1_cont");
+        let s2_load_bb = context.append_basic_block(func, "s2_load");
+        let s2_cont_bb = context.append_basic_block(func, "s2_cont");
+        let check_fbip_bb = context.append_basic_block(func, "check_fbip");
+        let fbip_bb = context.append_basic_block(func, "fbip_append");
+        let alloc_bb = context.append_basic_block(func, "alloc_new");
 
+        builder.position_at_end(entry_bb);
         let s1 = func.get_nth_param(0).unwrap().into_pointer_value();
         let s2 = func.get_nth_param(1).unwrap().into_pointer_value();
 
-        // Null checks for s1 and s2
+        let zero = i64_type.const_int(0, false);
         let s1_int = builder.build_ptr_to_int(s1, i64_type, "s1_int").unwrap();
         let s1_is_null = builder
+            .build_int_compare(IntPredicate::EQ, s1_int, zero, "s1_is_null")
+            .unwrap();
+        let _ = builder.build_conditional_branch(s1_is_null, s1_cont_bb, s1_load_bb);
+
+        builder.position_at_end(s1_load_bb);
+        let s1_len_p = unsafe {
+            builder
+                .build_gep(i64_type, s1, &[i64_type.const_int(1, false)], "s1_len_p")
+                .unwrap()
+        };
+        let s1_len_val = builder
+            .build_load(i64_type, s1_len_p, "s1_len_val")
+            .unwrap()
+            .into_int_value();
+        let _ = builder.build_unconditional_branch(s1_cont_bb);
+
+        builder.position_at_end(s1_cont_bb);
+        let len1_phi = builder.build_phi(i64_type, "len1").unwrap();
+        len1_phi.add_incoming(&[(&zero, entry_bb), (&s1_len_val, s1_load_bb)]);
+        let len1 = len1_phi.as_basic_value().into_int_value();
+
+        let s2_int = builder.build_ptr_to_int(s2, i64_type, "s2_int").unwrap();
+        let s2_is_null = builder
+            .build_int_compare(IntPredicate::EQ, s2_int, zero, "s2_is_null")
+            .unwrap();
+        let _ = builder.build_conditional_branch(s2_is_null, s2_cont_bb, s2_load_bb);
+
+        builder.position_at_end(s2_load_bb);
+        let s2_len_p = unsafe {
+            builder
+                .build_gep(i64_type, s2, &[i64_type.const_int(1, false)], "s2_len_p")
+                .unwrap()
+        };
+        let s2_len_val = builder
+            .build_load(i64_type, s2_len_p, "s2_len_val")
+            .unwrap()
+            .into_int_value();
+        let _ = builder.build_unconditional_branch(s2_cont_bb);
+
+        builder.position_at_end(s2_cont_bb);
+        let len2_phi = builder.build_phi(i64_type, "len2").unwrap();
+        len2_phi.add_incoming(&[(&zero, s1_cont_bb), (&s2_len_val, s2_load_bb)]);
+        let len2 = len2_phi.as_basic_value().into_int_value();
+
+        let total_len = builder.build_int_add(len1, len2, "total_len").unwrap();
+
+        // Check FBIP: s1 not null, rc1 == 1, cap1 - len1 >= len2
+        let _ = builder.build_conditional_branch(s1_is_null, alloc_bb, check_fbip_bb);
+
+        builder.position_at_end(check_fbip_bb);
+        let rc1 = builder
+            .build_load(i64_type, s1, "rc1")
+            .unwrap()
+            .into_int_value();
+        let is_uniq = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                rc1,
+                i64_type.const_int(1, false),
+                "is_uniq",
+            )
+            .unwrap();
+        let cap1_p = unsafe {
+            builder
+                .build_gep(i64_type, s1, &[i64_type.const_int(2, false)], "cap1_p")
+                .unwrap()
+        };
+        let cap1 = builder
+            .build_load(i64_type, cap1_p, "cap1")
+            .unwrap()
+            .into_int_value();
+        let avail = builder.build_int_sub(cap1, len1, "avail").unwrap();
+        let can_fit = builder
+            .build_int_compare(IntPredicate::SGE, avail, len2, "can_fit")
+            .unwrap();
+        let fbip_ok = builder.build_and(is_uniq, can_fit, "fbip_ok").unwrap();
+        let _ = builder.build_conditional_branch(fbip_ok, fbip_bb, alloc_bb);
+
+        // FBIP append block:
+        builder.position_at_end(fbip_bb);
+        let data1_fbip = unsafe {
+            builder
+                .build_gep(i8_type, s1, &[i64_type.const_int(24, false)], "data1_fbip")
+                .unwrap()
+        };
+        let dest_fbip = unsafe {
+            builder
+                .build_gep(i8_type, data1_fbip, &[len1], "dest_fbip")
+                .unwrap()
+        };
+        let data2_fbip = unsafe {
+            builder
+                .build_gep(i8_type, s2, &[i64_type.const_int(24, false)], "data2_fbip")
+                .unwrap()
+        };
+        let _ = builder.build_call(
+            memcpy_fn,
+            &[dest_fbip.into(), data2_fbip.into(), len2.into()],
+            "",
+        );
+        let term_fbip = unsafe {
+            builder
+                .build_gep(i8_type, data1_fbip, &[total_len], "term_fbip")
+                .unwrap()
+        };
+        let _ = builder.build_store(term_fbip, i8_type.const_int(0, false));
+        let len1_p_fbip = unsafe {
+            builder
+                .build_gep(i64_type, s1, &[i64_type.const_int(1, false)], "len1_p_fbip")
+                .unwrap()
+        };
+        let _ = builder.build_store(len1_p_fbip, total_len);
+        let _ = builder.build_return(Some(&s1));
+
+        // Alloc new block:
+        builder.position_at_end(alloc_bb);
+        let cap_headroom = builder
+            .build_int_add(total_len, i64_type.const_int(16, false), "cap_headroom")
+            .unwrap();
+        let alloc_bytes = builder
+            .build_int_add(
+                cap_headroom,
+                i64_type.const_int(24 + 1, false),
+                "alloc_bytes",
+            )
+            .unwrap();
+        let buf_call = builder
+            .build_call(alloc_fn, &[alloc_bytes.into()], "buf")
+            .unwrap();
+        let buf = buf_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+
+        let buf_len_p = unsafe {
+            builder
+                .build_gep(i64_type, buf, &[i64_type.const_int(1, false)], "buf_len_p")
+                .unwrap()
+        };
+        let _ = builder.build_store(buf_len_p, total_len);
+        let buf_cap_p = unsafe {
+            builder
+                .build_gep(i64_type, buf, &[i64_type.const_int(2, false)], "buf_cap_p")
+                .unwrap()
+        };
+        let _ = builder.build_store(buf_cap_p, cap_headroom);
+
+        let buf_data = unsafe {
+            builder
+                .build_gep(i8_type, buf, &[i64_type.const_int(24, false)], "buf_data")
+                .unwrap()
+        };
+
+        // Copy s1
+        let s1_data = unsafe {
+            builder
+                .build_gep(i8_type, s1, &[i64_type.const_int(24, false)], "s1_data")
+                .unwrap()
+        };
+        let safe_s1_data = builder
+            .build_select(s1_is_null, buf_data, s1_data, "safe_s1_data")
+            .unwrap()
+            .into_pointer_value();
+        let _ = builder.build_call(
+            memcpy_fn,
+            &[buf_data.into(), safe_s1_data.into(), len1.into()],
+            "",
+        );
+
+        // Copy s2 at buf_data + len1
+        let dest2 = unsafe {
+            builder
+                .build_gep(i8_type, buf_data, &[len1], "dest2")
+                .unwrap()
+        };
+        let s2_data = unsafe {
+            builder
+                .build_gep(i8_type, s2, &[i64_type.const_int(24, false)], "s2_data")
+                .unwrap()
+        };
+        let safe_s2_data = builder
+            .build_select(s2_is_null, buf_data, s2_data, "safe_s2_data")
+            .unwrap()
+            .into_pointer_value();
+        let _ = builder.build_call(
+            memcpy_fn,
+            &[dest2.into(), safe_s2_data.into(), len2.into()],
+            "",
+        );
+
+        // Null terminator
+        let term = unsafe {
+            builder
+                .build_gep(i8_type, buf_data, &[total_len], "term")
+                .unwrap()
+        };
+        let _ = builder.build_store(term, i8_type.const_int(0, false));
+
+        // Decrement consumed s1
+        let _ = builder.build_call(dec_ref_fn, &[s1.into()], "");
+
+        let _ = builder.build_return(Some(&buf));
+        func
+    }
+
+    /// Emits `modus_str_eq(s1: ptr, s2: ptr) -> i1`:
+    /// Returns 1 if strings are equal, 0 otherwise.
+    fn build_str_eq_fn(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        memcmp_fn: FunctionValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let i8_ptr = context.ptr_type(AddressSpace::default());
+        let i64_type = context.i64_type();
+        let i32_type = context.i32_type();
+        let bool_type = context.bool_type();
+        let fn_type = bool_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
+        let func = module.add_function("modus_str_eq", fn_type, None);
+
+        let builder = context.create_builder();
+        let entry_bb = context.append_basic_block(func, "entry");
+        let check_null_bb = context.append_basic_block(func, "check_null");
+        let check_len_bb = context.append_basic_block(func, "check_len");
+        let check_zero_bb = context.append_basic_block(func, "check_zero");
+        let cmp_mem_bb = context.append_basic_block(func, "cmp_mem");
+        let ret_true_bb = context.append_basic_block(func, "ret_true");
+        let ret_false_bb = context.append_basic_block(func, "ret_false");
+
+        builder.position_at_end(entry_bb);
+        let s1 = func.get_nth_param(0).unwrap().into_pointer_value();
+        let s2 = func.get_nth_param(1).unwrap().into_pointer_value();
+
+        let s1_int = builder.build_ptr_to_int(s1, i64_type, "s1_int").unwrap();
+        let s2_int = builder.build_ptr_to_int(s2, i64_type, "s2_int").unwrap();
+        let ptr_eq = builder
+            .build_int_compare(IntPredicate::EQ, s1_int, s2_int, "ptr_eq")
+            .unwrap();
+        let _ = builder.build_conditional_branch(ptr_eq, ret_true_bb, check_null_bb);
+
+        builder.position_at_end(check_null_bb);
+        let s1_null = builder
             .build_int_compare(
                 IntPredicate::EQ,
                 s1_int,
@@ -380,9 +669,7 @@ impl<'ctx> Runtime<'ctx> {
                 "s1_null",
             )
             .unwrap();
-
-        let s2_int = builder.build_ptr_to_int(s2, i64_type, "s2_int").unwrap();
-        let s2_is_null = builder
+        let s2_null = builder
             .build_int_compare(
                 IntPredicate::EQ,
                 s2_int,
@@ -390,495 +677,484 @@ impl<'ctx> Runtime<'ctx> {
                 "s2_null",
             )
             .unwrap();
+        let any_null = builder.build_or(s1_null, s2_null, "any_null").unwrap();
+        let _ = builder.build_conditional_branch(any_null, ret_false_bb, check_len_bb);
 
-        let dummy_empty = builder
-            .build_global_string_ptr("", "empty_str")
+        builder.position_at_end(check_len_bb);
+        let len1_ptr = unsafe {
+            builder
+                .build_gep(i64_type, s1, &[i64_type.const_int(1, false)], "len1_ptr")
+                .unwrap()
+        };
+        let len1 = builder
+            .build_load(i64_type, len1_ptr, "len1")
             .unwrap()
-            .as_basic_value_enum()
-            .into_pointer_value();
-
-        // Safe strlen calls
-        let safe_s1_len = builder
-            .build_select(s1_is_null, dummy_empty, s1, "safe_s1_len")
+            .into_int_value();
+        let len2_ptr = unsafe {
+            builder
+                .build_gep(i64_type, s2, &[i64_type.const_int(1, false)], "len2_ptr")
+                .unwrap()
+        };
+        let len2 = builder
+            .build_load(i64_type, len2_ptr, "len2")
             .unwrap()
-            .into_pointer_value();
-        let len1_call = builder
-            .build_call(strlen_fn, &[safe_s1_len.into()], "len1")
+            .into_int_value();
+        let len_diff = builder
+            .build_int_compare(IntPredicate::NE, len1, len2, "len_diff")
             .unwrap();
-        let len1 = len1_call
+        let _ = builder.build_conditional_branch(len_diff, ret_false_bb, check_zero_bb);
+
+        builder.position_at_end(check_zero_bb);
+        let is_zero = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                len1,
+                i64_type.const_int(0, false),
+                "is_zero",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_zero, ret_true_bb, cmp_mem_bb);
+
+        builder.position_at_end(cmp_mem_bb);
+        let data1 = unsafe {
+            builder
+                .build_gep(
+                    context.i8_type(),
+                    s1,
+                    &[i64_type.const_int(24, false)],
+                    "data1",
+                )
+                .unwrap()
+        };
+        let data2 = unsafe {
+            builder
+                .build_gep(
+                    context.i8_type(),
+                    s2,
+                    &[i64_type.const_int(24, false)],
+                    "data2",
+                )
+                .unwrap()
+        };
+        let cmp_call = builder
+            .build_call(
+                memcmp_fn,
+                &[data1.into(), data2.into(), len1.into()],
+                "memcmp_res",
+            )
+            .unwrap();
+        let cmp_val = cmp_call
             .try_as_basic_value()
             .basic()
             .unwrap()
             .into_int_value();
-
-        let safe_s2_len = builder
-            .build_select(s2_is_null, dummy_empty, s2, "safe_s2_len")
-            .unwrap()
-            .into_pointer_value();
-        let len2_call = builder
-            .build_call(strlen_fn, &[safe_s2_len.into()], "len2")
+        let is_match = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                cmp_val,
+                i32_type.const_int(0, false),
+                "is_match",
+            )
             .unwrap();
-        let len2 = len2_call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value();
+        let _ = builder.build_return(Some(&is_match));
 
-        let total_chars = builder.build_int_add(len1, len2, "total_chars").unwrap();
-        let total_len = builder
-            .build_int_add(total_chars, i64_type.const_int(1, false), "total_len")
-            .unwrap();
+        builder.position_at_end(ret_true_bb);
+        let _ = builder.build_return(Some(&bool_type.const_int(1, false)));
 
-        let mem_call = builder
-            .build_call(malloc_fn, &[total_len.into()], "buf")
-            .unwrap();
-        let buf = mem_call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
+        builder.position_at_end(ret_false_bb);
+        let _ = builder.build_return(Some(&bool_type.const_int(0, false)));
 
-        // Copy s1
-        let safe_s1 = builder
-            .build_select(s1_is_null, buf, s1, "safe_s1")
-            .unwrap()
-            .into_pointer_value();
-        let _ = builder.build_call(memcpy_fn, &[buf.into(), safe_s1.into(), len1.into()], "");
-
-        // Copy s2 at buf + len1
-        let buf_int = builder.build_ptr_to_int(buf, i64_type, "buf_int").unwrap();
-        let dest2_int = builder.build_int_add(buf_int, len1, "dest2_int").unwrap();
-        let dest2 = builder
-            .build_int_to_ptr(dest2_int, i8_ptr, "dest2")
-            .unwrap();
-        let safe_s2 = builder
-            .build_select(s2_is_null, buf, s2, "safe_s2")
-            .unwrap()
-            .into_pointer_value();
-        let _ = builder.build_call(memcpy_fn, &[dest2.into(), safe_s2.into(), len2.into()], "");
-
-        // Null terminator at buf + total_chars
-        let null_pos_int = builder
-            .build_int_add(buf_int, total_chars, "null_pos_int")
-            .unwrap();
-        let null_pos = builder
-            .build_int_to_ptr(null_pos_int, i8_ptr, "null_pos")
-            .unwrap();
-        let _ = builder.build_store(null_pos, context.i8_type().const_int(0, false));
-
-        let _ = builder.build_return(Some(&buf));
         func
     }
 
-    /// Emits `modus_fs_read_dir(path: ptr) -> ptr`:
-    /// Reads directory entries excluding "." and "..", constructs and returns a Modus Array of Strings:
-    /// `{ i64 rc = 1, i64 len, i64 cap, ptr reserved, [ptr s0, ptr s1, ...] }`.
-    fn build_fs_read_dir_fn(
+    /// Emits `modus_str_substring(s: ptr, start: i64, end: i64) -> ptr`:
+    fn build_str_substring_fn(
         context: &'ctx Context,
         module: &Module<'ctx>,
         alloc_fn: FunctionValue<'ctx>,
-        strcmp_fn: FunctionValue<'ctx>,
+        memcpy_fn: FunctionValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let i8_ptr = context.ptr_type(AddressSpace::default());
+        let i64_type = context.i64_type();
+        let i8_type = context.i8_type();
+        let fn_type = i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into(), i64_type.into()], false);
+        let func = module.add_function("modus_str_substring", fn_type, None);
+
+        let builder = context.create_builder();
+        let entry_bb = context.append_basic_block(func, "entry");
+        let bounds_bb = context.append_basic_block(func, "bounds");
+        let alloc_bb = context.append_basic_block(func, "alloc");
+        let ret_empty_bb = context.append_basic_block(func, "ret_empty");
+
+        builder.position_at_end(entry_bb);
+        let s = func.get_nth_param(0).unwrap().into_pointer_value();
+        let start = func.get_nth_param(1).unwrap().into_int_value();
+        let end = func.get_nth_param(2).unwrap().into_int_value();
+
+        let s_int = builder.build_ptr_to_int(s, i64_type, "s_int").unwrap();
+        let is_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                s_int,
+                i64_type.const_int(0, false),
+                "is_null",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_null, ret_empty_bb, bounds_bb);
+
+        builder.position_at_end(bounds_bb);
+        let len_p = unsafe {
+            builder
+                .build_gep(i64_type, s, &[i64_type.const_int(1, false)], "len_p")
+                .unwrap()
+        };
+        let s_len = builder
+            .build_load(i64_type, len_p, "s_len")
+            .unwrap()
+            .into_int_value();
+
+        let zero = i64_type.const_int(0, false);
+        let st_lt_0 = builder
+            .build_int_compare(IntPredicate::SLT, start, zero, "st_lt_0")
+            .unwrap();
+        let st0 = builder
+            .build_select(st_lt_0, zero, start, "st0")
+            .unwrap()
+            .into_int_value();
+        let st_gt_len = builder
+            .build_int_compare(IntPredicate::SGT, st0, s_len, "st_gt_len")
+            .unwrap();
+        let st = builder
+            .build_select(st_gt_len, s_len, st0, "st")
+            .unwrap()
+            .into_int_value();
+
+        let en_lt_0 = builder
+            .build_int_compare(IntPredicate::SLT, end, zero, "en_lt_0")
+            .unwrap();
+        let en0 = builder
+            .build_select(en_lt_0, zero, end, "en0")
+            .unwrap()
+            .into_int_value();
+        let en_gt_len = builder
+            .build_int_compare(IntPredicate::SGT, en0, s_len, "en_gt_len")
+            .unwrap();
+        let en = builder
+            .build_select(en_gt_len, s_len, en0, "en")
+            .unwrap()
+            .into_int_value();
+
+        let st_gt_en = builder
+            .build_int_compare(IntPredicate::SGT, st, en, "st_gt_en")
+            .unwrap();
+        let actual_start = builder
+            .build_select(st_gt_en, en, st, "actual_start")
+            .unwrap()
+            .into_int_value();
+        let actual_end = builder
+            .build_select(st_gt_en, st, en, "actual_end")
+            .unwrap()
+            .into_int_value();
+
+        let sub_len = builder
+            .build_int_sub(actual_end, actual_start, "sub_len")
+            .unwrap();
+        let is_empty = builder
+            .build_int_compare(IntPredicate::SLE, sub_len, zero, "is_empty")
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_empty, ret_empty_bb, alloc_bb);
+
+        builder.position_at_end(alloc_bb);
+        let alloc_bytes = builder
+            .build_int_add(sub_len, i64_type.const_int(24 + 1, false), "alloc_bytes")
+            .unwrap();
+        let buf_call = builder
+            .build_call(alloc_fn, &[alloc_bytes.into()], "sub_buf")
+            .unwrap();
+        let buf = buf_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+
+        let buf_len_p = unsafe {
+            builder
+                .build_gep(i64_type, buf, &[i64_type.const_int(1, false)], "buf_len_p")
+                .unwrap()
+        };
+        let _ = builder.build_store(buf_len_p, sub_len);
+        let buf_cap_p = unsafe {
+            builder
+                .build_gep(i64_type, buf, &[i64_type.const_int(2, false)], "buf_cap_p")
+                .unwrap()
+        };
+        let _ = builder.build_store(buf_cap_p, sub_len);
+
+        let src_off = builder
+            .build_int_add(i64_type.const_int(24, false), actual_start, "src_off")
+            .unwrap();
+        let src_data = unsafe {
+            builder
+                .build_gep(i8_type, s, &[src_off], "src_data")
+                .unwrap()
+        };
+        let dest_data = unsafe {
+            builder
+                .build_gep(i8_type, buf, &[i64_type.const_int(24, false)], "dest_data")
+                .unwrap()
+        };
+        let _ = builder.build_call(
+            memcpy_fn,
+            &[dest_data.into(), src_data.into(), sub_len.into()],
+            "",
+        );
+
+        let term_p = unsafe {
+            builder
+                .build_gep(i8_type, dest_data, &[sub_len], "term_p")
+                .unwrap()
+        };
+        let _ = builder.build_store(term_p, i8_type.const_int(0, false));
+        let _ = builder.build_return(Some(&buf));
+
+        builder.position_at_end(ret_empty_bb);
+        let empty_call = builder
+            .build_call(
+                alloc_fn,
+                &[i64_type.const_int(24 + 1, false).into()],
+                "empty_buf",
+            )
+            .unwrap();
+        let empty_buf = empty_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let e_len_p = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    empty_buf,
+                    &[i64_type.const_int(1, false)],
+                    "e_len_p",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(e_len_p, zero);
+        let e_cap_p = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    empty_buf,
+                    &[i64_type.const_int(2, false)],
+                    "e_cap_p",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(e_cap_p, zero);
+        let e_data = unsafe {
+            builder
+                .build_gep(
+                    i8_type,
+                    empty_buf,
+                    &[i64_type.const_int(24, false)],
+                    "e_data",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(e_data, i8_type.const_int(0, false));
+        let _ = builder.build_return(Some(&empty_buf));
+
+        func
+    }
+
+    /// Emits `modus_string_from_c_str(cs: ptr) -> ptr`:
+    fn build_string_from_c_str_fn(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        alloc_fn: FunctionValue<'ctx>,
+        strlen_fn: FunctionValue<'ctx>,
+        memcpy_fn: FunctionValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let i8_ptr = context.ptr_type(AddressSpace::default());
+        let i64_type = context.i64_type();
+        let i8_type = context.i8_type();
+        let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
+        let func = module.add_function("modus_string_from_c_str", fn_type, None);
+
+        let builder = context.create_builder();
+        let entry_bb = context.append_basic_block(func, "entry");
+        let alloc_bb = context.append_basic_block(func, "alloc");
+        let ret_empty_bb = context.append_basic_block(func, "ret_empty");
+
+        builder.position_at_end(entry_bb);
+        let cs = func.get_nth_param(0).unwrap().into_pointer_value();
+        let cs_int = builder.build_ptr_to_int(cs, i64_type, "cs_int").unwrap();
+        let is_null = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                cs_int,
+                i64_type.const_int(0, false),
+                "is_null",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_null, ret_empty_bb, alloc_bb);
+
+        builder.position_at_end(alloc_bb);
+        let len_call = builder
+            .build_call(strlen_fn, &[cs.into()], "c_len")
+            .unwrap();
+        let len = len_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_int_value();
+        let alloc_bytes = builder
+            .build_int_add(len, i64_type.const_int(24 + 1, false), "alloc_bytes")
+            .unwrap();
+        let buf_call = builder
+            .build_call(alloc_fn, &[alloc_bytes.into()], "buf")
+            .unwrap();
+        let buf = buf_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+
+        let len_p = unsafe {
+            builder
+                .build_gep(i64_type, buf, &[i64_type.const_int(1, false)], "len_p")
+                .unwrap()
+        };
+        let _ = builder.build_store(len_p, len);
+        let cap_p = unsafe {
+            builder
+                .build_gep(i64_type, buf, &[i64_type.const_int(2, false)], "cap_p")
+                .unwrap()
+        };
+        let _ = builder.build_store(cap_p, len);
+
+        let dest = unsafe {
+            builder
+                .build_gep(i8_type, buf, &[i64_type.const_int(24, false)], "dest")
+                .unwrap()
+        };
+        let len_plus_1 = builder
+            .build_int_add(len, i64_type.const_int(1, false), "len_plus_1")
+            .unwrap();
+        let _ = builder.build_call(memcpy_fn, &[dest.into(), cs.into(), len_plus_1.into()], "");
+        let _ = builder.build_return(Some(&buf));
+
+        builder.position_at_end(ret_empty_bb);
+        let zero = i64_type.const_int(0, false);
+        let empty_call = builder
+            .build_call(
+                alloc_fn,
+                &[i64_type.const_int(24 + 1, false).into()],
+                "empty_buf",
+            )
+            .unwrap();
+        let empty_buf = empty_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+        let e_len_p = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    empty_buf,
+                    &[i64_type.const_int(1, false)],
+                    "e_len_p",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(e_len_p, zero);
+        let e_cap_p = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    empty_buf,
+                    &[i64_type.const_int(2, false)],
+                    "e_cap_p",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(e_cap_p, zero);
+        let e_data = unsafe {
+            builder
+                .build_gep(
+                    i8_type,
+                    empty_buf,
+                    &[i64_type.const_int(24, false)],
+                    "e_data",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(e_data, i8_type.const_int(0, false));
+        let _ = builder.build_return(Some(&empty_buf));
+
+        func
+    }
+
+    /// Emits `modus_str_from_char_code(code: i32) -> ptr`:
+    fn build_str_from_char_code_fn(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        alloc_fn: FunctionValue<'ctx>,
     ) -> FunctionValue<'ctx> {
         let i8_ptr = context.ptr_type(AddressSpace::default());
         let i64_type = context.i64_type();
         let i32_type = context.i32_type();
         let i8_type = context.i8_type();
-
-        let opendir_fn = module.get_function("opendir").unwrap_or_else(|| {
-            let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
-            module.add_function("opendir", fn_type, None)
-        });
-
-        let readdir_fn = module.get_function("readdir").unwrap_or_else(|| {
-            let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
-            module.add_function("readdir", fn_type, None)
-        });
-
-        let closedir_fn = module.get_function("closedir").unwrap_or_else(|| {
-            let fn_type = i32_type.fn_type(&[i8_ptr.into()], false);
-            module.add_function("closedir", fn_type, None)
-        });
-
-        let strdup_fn = module.get_function("strdup").unwrap_or_else(|| {
-            let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
-            module.add_function("strdup", fn_type, None)
-        });
-
-        let fn_type = i8_ptr.fn_type(&[i8_ptr.into()], false);
-        let func = module.add_function("modus_fs_read_dir", fn_type, None);
+        let fn_type = i8_ptr.fn_type(&[i32_type.into()], false);
+        let func = module.add_function("modus_str_from_char_code", fn_type, None);
 
         let builder = context.create_builder();
-
         let entry_bb = context.append_basic_block(func, "entry");
-        let empty_ret_bb = context.append_basic_block(func, "empty_ret");
-        let count_loop_bb = context.append_basic_block(func, "count_loop");
-        let count_check_bb = context.append_basic_block(func, "count_check");
-        let count_inc_bb = context.append_basic_block(func, "count_inc");
-        let count_done_bb = context.append_basic_block(func, "count_done");
-        let open_second_bb = context.append_basic_block(func, "open_second");
-        let fill_loop_bb = context.append_basic_block(func, "fill_loop");
-        let fill_check_bb = context.append_basic_block(func, "fill_check");
-        let fill_store_bb = context.append_basic_block(func, "fill_store");
-        let fill_done_bb = context.append_basic_block(func, "fill_done");
-        let ret_arr_bb = context.append_basic_block(func, "ret_arr");
-
-        // Entry block
         builder.position_at_end(entry_bb);
-        let path_arg = func.get_first_param().unwrap().into_pointer_value();
 
-        // Global constant strings for "." and ".."
-        let dot_str = builder
-            .build_global_string_ptr(".", "dot")
-            .unwrap()
-            .as_basic_value_enum();
-        let dotdot_str = builder
-            .build_global_string_ptr("..", "dotdot")
-            .unwrap()
-            .as_basic_value_enum();
-
-        let count_alloca = builder.build_alloca(i64_type, "count").unwrap();
-        let _ = builder.build_store(count_alloca, i64_type.const_int(0, false));
-        let idx_alloca = builder.build_alloca(i64_type, "idx").unwrap();
-        let _ = builder.build_store(idx_alloca, i64_type.const_int(0, false));
-        let arr_alloca = builder.build_alloca(i8_ptr, "arr_alloca").unwrap();
-
-        let dir1_call = builder
-            .build_call(opendir_fn, &[path_arg.into()], "dir1")
+        let code = func.get_nth_param(0).unwrap().into_int_value();
+        let code_u8 = builder
+            .build_int_truncate(code, i8_type, "code_u8")
             .unwrap();
-        let dir1_ptr = dir1_call
+
+        let alloc_bytes = i64_type.const_int(24 + 1 + 1, false);
+        let buf_call = builder
+            .build_call(alloc_fn, &[alloc_bytes.into()], "char_buf")
+            .unwrap();
+        let buf = buf_call
             .try_as_basic_value()
             .basic()
             .unwrap()
             .into_pointer_value();
-        let dir1_int = builder
-            .build_ptr_to_int(dir1_ptr, i64_type, "dir1_int")
-            .unwrap();
-        let is_dir1_null = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                dir1_int,
-                i64_type.const_int(0, false),
-                "is_dir1_null",
-            )
-            .unwrap();
-        let _ = builder.build_conditional_branch(is_dir1_null, empty_ret_bb, count_loop_bb);
 
-        // empty_ret block
-        builder.position_at_end(empty_ret_bb);
-        let empty_alloc = builder
-            .build_call(
-                alloc_fn,
-                &[i64_type.const_int(32, false).into()],
-                "empty_arr",
-            )
-            .unwrap();
-        let empty_ptr = empty_alloc
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        unsafe {
-            let p1 = builder
-                .build_gep(i64_type, empty_ptr, &[i64_type.const_int(1, false)], "p1")
-                .unwrap();
-            let _ = builder.build_store(p1, i64_type.const_int(0, false));
-            let p2 = builder
-                .build_gep(i64_type, empty_ptr, &[i64_type.const_int(2, false)], "p2")
-                .unwrap();
-            let _ = builder.build_store(p2, i64_type.const_int(0, false));
-            let p3 = builder
-                .build_gep(i64_type, empty_ptr, &[i64_type.const_int(3, false)], "p3")
-                .unwrap();
-            let _ = builder.build_store(p3, i64_type.const_int(0, false));
-        }
-        let _ = builder.build_return(Some(&empty_ptr));
-
-        // count_loop block
-        builder.position_at_end(count_loop_bb);
-        let de1_call = builder
-            .build_call(readdir_fn, &[dir1_ptr.into()], "de1")
-            .unwrap();
-        let de1_ptr = de1_call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let de1_int = builder
-            .build_ptr_to_int(de1_ptr, i64_type, "de1_int")
-            .unwrap();
-        let is_de1_null = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                de1_int,
-                i64_type.const_int(0, false),
-                "is_de1_null",
-            )
-            .unwrap();
-        let _ = builder.build_conditional_branch(is_de1_null, count_done_bb, count_check_bb);
-
-        // count_check block
-        builder.position_at_end(count_check_bb);
-        let d_name1 = unsafe {
+        let one = i64_type.const_int(1, false);
+        let len_p = unsafe { builder.build_gep(i64_type, buf, &[one], "len_p").unwrap() };
+        let _ = builder.build_store(len_p, one);
+        let cap_p = unsafe {
             builder
-                .build_gep(
-                    i8_type,
-                    de1_ptr,
-                    &[i64_type.const_int(19, false)],
-                    "d_name1",
-                )
+                .build_gep(i64_type, buf, &[i64_type.const_int(2, false)], "cap_p")
                 .unwrap()
         };
-        let cmp_dot1 = builder
-            .build_call(strcmp_fn, &[d_name1.into(), dot_str.into()], "cmp_dot1")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value();
-        let is_dot1 = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                cmp_dot1,
-                i32_type.const_int(0, false),
-                "is_dot1",
-            )
-            .unwrap();
+        let _ = builder.build_store(cap_p, one);
 
-        let cmp_dotdot1 = builder
-            .build_call(
-                strcmp_fn,
-                &[d_name1.into(), dotdot_str.into()],
-                "cmp_dotdot1",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value();
-        let is_dotdot1 = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                cmp_dotdot1,
-                i32_type.const_int(0, false),
-                "is_dotdot1",
-            )
-            .unwrap();
-
-        let is_skip1 = builder.build_or(is_dot1, is_dotdot1, "is_skip1").unwrap();
-        let _ = builder.build_conditional_branch(is_skip1, count_loop_bb, count_inc_bb);
-
-        // count_inc block
-        builder.position_at_end(count_inc_bb);
-        let c = builder
-            .build_load(i64_type, count_alloca, "c")
-            .unwrap()
-            .into_int_value();
-        let c_next = builder
-            .build_int_add(c, i64_type.const_int(1, false), "c_next")
-            .unwrap();
-        let _ = builder.build_store(count_alloca, c_next);
-        let _ = builder.build_unconditional_branch(count_loop_bb);
-
-        // count_done block
-        builder.position_at_end(count_done_bb);
-        let _ = builder.build_call(closedir_fn, &[dir1_ptr.into()], "");
-        let total_count = builder
-            .build_load(i64_type, count_alloca, "total_count")
-            .unwrap()
-            .into_int_value();
-        let four = i64_type.const_int(4, false);
-        let total_elems = builder
-            .build_int_add(total_count, four, "total_elems")
-            .unwrap();
-        let eight = i64_type.const_int(8, false);
-        let alloc_bytes = builder
-            .build_int_mul(total_elems, eight, "alloc_bytes")
-            .unwrap();
-        let arr_call = builder
-            .build_call(alloc_fn, &[alloc_bytes.into()], "arr")
-            .unwrap();
-        let arr_ptr = arr_call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let _ = builder.build_store(arr_alloca, arr_ptr);
-
-        unsafe {
-            let p1 = builder
-                .build_gep(i64_type, arr_ptr, &[i64_type.const_int(1, false)], "p1")
-                .unwrap();
-            let _ = builder.build_store(p1, total_count);
-            let p2 = builder
-                .build_gep(i64_type, arr_ptr, &[i64_type.const_int(2, false)], "p2")
-                .unwrap();
-            let _ = builder.build_store(p2, total_count);
-            let p3 = builder
-                .build_gep(i64_type, arr_ptr, &[i64_type.const_int(3, false)], "p3")
-                .unwrap();
-            let _ = builder.build_store(p3, i64_type.const_int(0, false));
-        }
-
-        let has_elements = builder
-            .build_int_compare(
-                IntPredicate::SGT,
-                total_count,
-                i64_type.const_int(0, false),
-                "has_elements",
-            )
-            .unwrap();
-        let _ = builder.build_conditional_branch(has_elements, open_second_bb, ret_arr_bb);
-
-        // open_second block
-        builder.position_at_end(open_second_bb);
-        let dir2_call = builder
-            .build_call(opendir_fn, &[path_arg.into()], "dir2")
-            .unwrap();
-        let dir2_ptr = dir2_call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let dir2_int = builder
-            .build_ptr_to_int(dir2_ptr, i64_type, "dir2_int")
-            .unwrap();
-        let is_dir2_null = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                dir2_int,
-                i64_type.const_int(0, false),
-                "is_dir2_null",
-            )
-            .unwrap();
-        let _ = builder.build_conditional_branch(is_dir2_null, ret_arr_bb, fill_loop_bb);
-
-        // fill_loop block
-        builder.position_at_end(fill_loop_bb);
-        let de2_call = builder
-            .build_call(readdir_fn, &[dir2_ptr.into()], "de2")
-            .unwrap();
-        let de2_ptr = de2_call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let de2_int = builder
-            .build_ptr_to_int(de2_ptr, i64_type, "de2_int")
-            .unwrap();
-        let is_de2_null = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                de2_int,
-                i64_type.const_int(0, false),
-                "is_de2_null",
-            )
-            .unwrap();
-        let _ = builder.build_conditional_branch(is_de2_null, fill_done_bb, fill_check_bb);
-
-        // fill_check block
-        builder.position_at_end(fill_check_bb);
-        let d_name2 = unsafe {
+        let dest = unsafe {
             builder
-                .build_gep(
-                    i8_type,
-                    de2_ptr,
-                    &[i64_type.const_int(19, false)],
-                    "d_name2",
-                )
+                .build_gep(i8_type, buf, &[i64_type.const_int(24, false)], "dest")
                 .unwrap()
         };
-        let cmp_dot2 = builder
-            .build_call(strcmp_fn, &[d_name2.into(), dot_str.into()], "cmp_dot2")
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value();
-        let is_dot2 = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                cmp_dot2,
-                i32_type.const_int(0, false),
-                "is_dot2",
-            )
-            .unwrap();
+        let _ = builder.build_store(dest, code_u8);
+        let term = unsafe { builder.build_gep(i8_type, dest, &[one], "term").unwrap() };
+        let _ = builder.build_store(term, i8_type.const_int(0, false));
 
-        let cmp_dotdot2 = builder
-            .build_call(
-                strcmp_fn,
-                &[d_name2.into(), dotdot_str.into()],
-                "cmp_dotdot2",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_int_value();
-        let is_dotdot2 = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                cmp_dotdot2,
-                i32_type.const_int(0, false),
-                "is_dotdot2",
-            )
-            .unwrap();
-
-        let is_skip2 = builder.build_or(is_dot2, is_dotdot2, "is_skip2").unwrap();
-        let _ = builder.build_conditional_branch(is_skip2, fill_loop_bb, fill_store_bb);
-
-        // fill_store block
-        builder.position_at_end(fill_store_bb);
-        let dup_call = builder
-            .build_call(strdup_fn, &[d_name2.into()], "dup_name")
-            .unwrap();
-        let dup_ptr = dup_call
-            .try_as_basic_value()
-            .basic()
-            .unwrap()
-            .into_pointer_value();
-        let curr_idx = builder
-            .build_load(i64_type, idx_alloca, "curr_idx")
-            .unwrap()
-            .into_int_value();
-        let slot_offset = builder
-            .build_int_add(curr_idx, i64_type.const_int(4, false), "slot_offset")
-            .unwrap();
-
-        let arr_val = builder
-            .build_load(i8_ptr, arr_alloca, "arr_val")
-            .unwrap()
-            .into_pointer_value();
-        let elem_slot = unsafe {
-            builder
-                .build_gep(i8_ptr, arr_val, &[slot_offset], "elem_slot")
-                .unwrap()
-        };
-        let _ = builder.build_store(elem_slot, dup_ptr);
-
-        let next_idx = builder
-            .build_int_add(curr_idx, i64_type.const_int(1, false), "next_idx")
-            .unwrap();
-        let _ = builder.build_store(idx_alloca, next_idx);
-        let _ = builder.build_unconditional_branch(fill_loop_bb);
-
-        // fill_done block
-        builder.position_at_end(fill_done_bb);
-        let _ = builder.build_call(closedir_fn, &[dir2_ptr.into()], "");
-        let _ = builder.build_unconditional_branch(ret_arr_bb);
-
-        // ret_arr block
-        builder.position_at_end(ret_arr_bb);
-        let final_arr = builder
-            .build_load(i8_ptr, arr_alloca, "final_arr")
-            .unwrap()
-            .into_pointer_value();
-        let _ = builder.build_return(Some(&final_arr));
-
+        let _ = builder.build_return(Some(&buf));
         func
     }
-    /// Emits `modus_array_builder_new(cap: i64) -> ptr`:
+
+    /// Emits `modus_array_new(cap: i64) -> ptr`:
     /// Allocates buffer of size (4 + max(cap, 4)) * 8 bytes, sets rc = 1, len = 0, cap = max(cap, 4), reserved = 0.
-    fn build_array_builder_new_fn(
+    fn build_array_new_fn(
         context: &'ctx Context,
         module: &Module<'ctx>,
         malloc_fn: FunctionValue<'ctx>,
@@ -886,7 +1162,7 @@ impl<'ctx> Runtime<'ctx> {
         let i8_ptr = context.ptr_type(AddressSpace::default());
         let i64_type = context.i64_type();
         let fn_type = i8_ptr.fn_type(&[i64_type.into()], false);
-        let func = module.add_function("modus_array_builder_new", fn_type, None);
+        let func = module.add_function("modus_array_new", fn_type, None);
 
         let builder = context.create_builder();
         let entry_bb = context.append_basic_block(func, "entry");
@@ -965,14 +1241,14 @@ impl<'ctx> Runtime<'ctx> {
         func
     }
 
-    /// Emits `modus_array_builder_push(builder: ptr, elem: i64, elem_is_heap: i1) -> ptr`:
+    /// Emits `modus_array_push(builder: ptr, elem: i64, elem_is_heap: i1) -> ptr`:
     /// Functional-But-In-Place (FBIP) accumulation.
     /// If rc == 1:
     ///   if len < cap: in-place write elem at 4 + len, len += 1, return builder
     ///   if len == cap: double cap, allocate new buffer, copy 4 header words + len elements, write elem, free(old), return new
     /// If rc > 1:
     ///   copy-on-write: allocate new buffer, copy elements (inc_ref if heap), write elem, dec_ref(old), return new
-    fn build_array_builder_push_fn(
+    fn build_array_push_fn(
         context: &'ctx Context,
         module: &Module<'ctx>,
         malloc_fn: FunctionValue<'ctx>,
@@ -985,7 +1261,7 @@ impl<'ctx> Runtime<'ctx> {
         let i64_type = context.i64_type();
         let i1_type = context.bool_type();
         let fn_type = i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into(), i1_type.into()], false);
-        let func = module.add_function("modus_array_builder_push", fn_type, None);
+        let func = module.add_function("modus_array_push", fn_type, None);
 
         let builder = context.create_builder();
         let entry_bb = context.append_basic_block(func, "entry");
@@ -1355,11 +1631,11 @@ impl<'ctx> Runtime<'ctx> {
         func
     }
 
-    /// Emits `modus_array_builder_build(builder: ptr, elem_is_heap: i1) -> ptr`:
+    /// Emits `modus_array_build(builder: ptr, elem_is_heap: i1) -> ptr`:
     /// Finalizes builder into immutable array [T].
     /// If rc == 1: Zero-copy! Returns builder directly.
     /// If rc > 1: Clones exact-sized array [T], inc_refs elements if heap, dec_refs old builder, returns new array.
-    fn build_array_builder_build_fn(
+    fn build_array_build_fn(
         context: &'ctx Context,
         module: &Module<'ctx>,
         malloc_fn: FunctionValue<'ctx>,
@@ -1371,7 +1647,7 @@ impl<'ctx> Runtime<'ctx> {
         let i64_type = context.i64_type();
         let i1_type = context.bool_type();
         let fn_type = i8_ptr.fn_type(&[i8_ptr.into(), i1_type.into()], false);
-        let func = module.add_function("modus_array_builder_build", fn_type, None);
+        let func = module.add_function("modus_array_build", fn_type, None);
 
         let builder = context.create_builder();
         let entry_bb = context.append_basic_block(func, "entry");
@@ -1513,6 +1789,558 @@ impl<'ctx> Runtime<'ctx> {
         builder.position_at_end(finish_bb);
         let _ = builder.build_call(dec_ref_fn, &[builder_arg.into()], "");
         let _ = builder.build_return(Some(&new_arr));
+
+        func
+    }
+
+    /// Emits `modus_array_set(arr: ptr, idx: i64, elem: i64, elem_is_heap: i1) -> ptr`:
+    /// Functional-But-In-Place (FBIP) array indexed update.
+    /// If idx < 0 || idx >= len: return arr (bounds check safety).
+    /// If rc == 1:
+    ///   if elem_is_heap: dec_ref old element at arr[4 + idx]
+    ///   store elem at arr[4 + idx]
+    ///   return arr
+    /// If rc > 1:
+    ///   allocate new buffer of (4 + cap) words
+    ///   memcpy (4 + len) words from arr to new_buf
+    ///   set rc = 1 in new_buf
+    ///   if elem_is_heap: inc_ref elements at all i != idx
+    ///   store elem at new_buf[4 + idx]
+    ///   dec_ref(arr)
+    ///   return new_buf
+    fn build_array_set_fn(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        malloc_fn: FunctionValue<'ctx>,
+        memcpy_fn: FunctionValue<'ctx>,
+        inc_ref_fn: FunctionValue<'ctx>,
+        dec_ref_fn: FunctionValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let i8_ptr = context.ptr_type(AddressSpace::default());
+        let i64_type = context.i64_type();
+        let i1_type = context.bool_type();
+        let fn_type = i8_ptr.fn_type(
+            &[
+                i8_ptr.into(),
+                i64_type.into(),
+                i64_type.into(),
+                i1_type.into(),
+            ],
+            false,
+        );
+        let func = module.add_function("modus_array_set", fn_type, None);
+
+        let builder = context.create_builder();
+        let entry_bb = context.append_basic_block(func, "entry");
+        let bounds_ok_bb = context.append_basic_block(func, "bounds_ok");
+        let unique_bb = context.append_basic_block(func, "unique_path");
+        let cow_bb = context.append_basic_block(func, "cow_path");
+        let ret_early_bb = context.append_basic_block(func, "ret_early");
+
+        builder.position_at_end(entry_bb);
+        let arr_arg = func.get_nth_param(0).unwrap().into_pointer_value();
+        let idx_arg = func.get_nth_param(1).unwrap().into_int_value();
+        let elem_arg = func.get_nth_param(2).unwrap().into_int_value();
+        let elem_is_heap = func.get_nth_param(3).unwrap().into_int_value();
+
+        let len_ptr = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    arr_arg,
+                    &[i64_type.const_int(1, false)],
+                    "len_ptr",
+                )
+                .unwrap()
+        };
+        let len = builder
+            .build_load(i64_type, len_ptr, "len")
+            .unwrap()
+            .into_int_value();
+
+        let ge_zero = builder
+            .build_int_compare(
+                IntPredicate::SGE,
+                idx_arg,
+                i64_type.const_int(0, false),
+                "ge_zero",
+            )
+            .unwrap();
+        let lt_len = builder
+            .build_int_compare(IntPredicate::SLT, idx_arg, len, "lt_len")
+            .unwrap();
+        let in_bounds = builder.build_and(ge_zero, lt_len, "in_bounds").unwrap();
+        let _ = builder.build_conditional_branch(in_bounds, bounds_ok_bb, ret_early_bb);
+
+        // --- In bounds ---
+        builder.position_at_end(bounds_ok_bb);
+        let rc = builder
+            .build_load(i64_type, arr_arg, "rc")
+            .unwrap()
+            .into_int_value();
+        let is_unique = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                rc,
+                i64_type.const_int(1, false),
+                "is_unique",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_unique, unique_bb, cow_bb);
+
+        // --- Unique path (rc == 1) ---
+        let unique_dec_bb = context.append_basic_block(func, "unique_dec");
+        let unique_write_bb = context.append_basic_block(func, "unique_write");
+
+        builder.position_at_end(unique_bb);
+        let slot_offset = builder
+            .build_int_add(idx_arg, i64_type.const_int(4, false), "slot_offset")
+            .unwrap();
+        let elem_ptr = unsafe {
+            builder
+                .build_gep(i64_type, arr_arg, &[slot_offset], "elem_slot")
+                .unwrap()
+        };
+        let is_heap_cond = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                elem_is_heap,
+                context.bool_type().const_int(0, false),
+                "is_heap_cond",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_heap_cond, unique_dec_bb, unique_write_bb);
+
+        builder.position_at_end(unique_dec_bb);
+        let old_elem_int = builder
+            .build_load(i64_type, elem_ptr, "old_el_int")
+            .unwrap()
+            .into_int_value();
+        let old_elem_ptr = builder
+            .build_int_to_ptr(old_elem_int, i8_ptr, "old_el_ptr")
+            .unwrap();
+        let _ = builder.build_call(dec_ref_fn, &[old_elem_ptr.into()], "");
+        let _ = builder.build_unconditional_branch(unique_write_bb);
+
+        builder.position_at_end(unique_write_bb);
+        let _ = builder.build_store(elem_ptr, elem_arg);
+        let _ = builder.build_return(Some(&arr_arg));
+
+        // --- COW path (rc > 1) ---
+        let cow_inc_loop_bb = context.append_basic_block(func, "cow_inc_loop");
+        let cow_inc_check_bb = context.append_basic_block(func, "cow_inc_check");
+        let cow_inc_body_bb = context.append_basic_block(func, "cow_inc_body");
+        let cow_inc_next_bb = context.append_basic_block(func, "cow_inc_next");
+        let cow_finish_bb = context.append_basic_block(func, "cow_finish");
+
+        builder.position_at_end(cow_bb);
+        let cap_ptr = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    arr_arg,
+                    &[i64_type.const_int(2, false)],
+                    "cap_ptr",
+                )
+                .unwrap()
+        };
+        let cap = builder
+            .build_load(i64_type, cap_ptr, "cap")
+            .unwrap()
+            .into_int_value();
+
+        let cow_words = builder
+            .build_int_add(cap, i64_type.const_int(4, false), "c_words")
+            .unwrap();
+        let cow_size = builder
+            .build_int_mul(cow_words, i64_type.const_int(8, false), "c_size")
+            .unwrap();
+        let cow_buf_call = builder
+            .build_call(malloc_fn, &[cow_size.into()], "c_buf")
+            .unwrap();
+        let cow_buf = cow_buf_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+
+        // Copy elements + headers: (4 + len) * 8
+        let copy_words = builder
+            .build_int_add(len, i64_type.const_int(4, false), "copy_words")
+            .unwrap();
+        let copy_bytes = builder
+            .build_int_mul(copy_words, i64_type.const_int(8, false), "copy_bytes")
+            .unwrap();
+        let _ = builder.build_call(
+            memcpy_fn,
+            &[cow_buf.into(), arr_arg.into(), copy_bytes.into()],
+            "",
+        );
+
+        // Header: rc = 1
+        let _ = builder.build_store(cow_buf, i64_type.const_int(1, false));
+
+        let has_heap_elems = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                elem_is_heap,
+                context.bool_type().const_int(0, false),
+                "has_heap",
+            )
+            .unwrap();
+        let has_items = builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                len,
+                i64_type.const_int(0, false),
+                "has_items",
+            )
+            .unwrap();
+        let needs_inc = builder
+            .build_and(has_heap_elems, has_items, "needs_inc")
+            .unwrap();
+
+        let cow_idx_alloca = builder.build_alloca(i64_type, "cow_idx").unwrap();
+        let _ = builder.build_store(cow_idx_alloca, i64_type.const_int(0, false));
+        let _ = builder.build_conditional_branch(needs_inc, cow_inc_loop_bb, cow_finish_bb);
+
+        // Loop i from 0 to len - 1: if i != idx { inc_ref(elem) }
+        builder.position_at_end(cow_inc_loop_bb);
+        let cur_i = builder
+            .build_load(i64_type, cow_idx_alloca, "cur_i")
+            .unwrap()
+            .into_int_value();
+        let in_loop = builder
+            .build_int_compare(IntPredicate::SLT, cur_i, len, "in_loop")
+            .unwrap();
+        let _ = builder.build_conditional_branch(in_loop, cow_inc_check_bb, cow_finish_bb);
+
+        builder.position_at_end(cow_inc_check_bb);
+        let is_target = builder
+            .build_int_compare(IntPredicate::EQ, cur_i, idx_arg, "is_target")
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_target, cow_inc_next_bb, cow_inc_body_bb);
+
+        builder.position_at_end(cow_inc_body_bb);
+        let cur_slot = builder
+            .build_int_add(cur_i, i64_type.const_int(4, false), "c_slot")
+            .unwrap();
+        let cur_slot_ptr = unsafe {
+            builder
+                .build_gep(i64_type, cow_buf, &[cur_slot], "c_slot_ptr")
+                .unwrap()
+        };
+        let cur_elem_int = builder
+            .build_load(i64_type, cur_slot_ptr, "c_elem_int")
+            .unwrap()
+            .into_int_value();
+        let cur_elem_ptr = builder
+            .build_int_to_ptr(cur_elem_int, i8_ptr, "c_elem_ptr")
+            .unwrap();
+        let _ = builder.build_call(inc_ref_fn, &[cur_elem_ptr.into()], "");
+        let _ = builder.build_unconditional_branch(cow_inc_next_bb);
+
+        builder.position_at_end(cow_inc_next_bb);
+        let next_i = builder
+            .build_int_add(cur_i, i64_type.const_int(1, false), "next_i")
+            .unwrap();
+        let _ = builder.build_store(cow_idx_alloca, next_i);
+        let _ = builder.build_unconditional_branch(cow_inc_loop_bb);
+
+        builder.position_at_end(cow_finish_bb);
+        let target_slot = builder
+            .build_int_add(idx_arg, i64_type.const_int(4, false), "t_slot")
+            .unwrap();
+        let target_ptr = unsafe {
+            builder
+                .build_gep(i64_type, cow_buf, &[target_slot], "t_slot_ptr")
+                .unwrap()
+        };
+        let _ = builder.build_store(target_ptr, elem_arg);
+        let _ = builder.build_call(dec_ref_fn, &[arr_arg.into()], "");
+        let _ = builder.build_return(Some(&cow_buf));
+
+        // --- Ret early (bounds fail) ---
+        builder.position_at_end(ret_early_bb);
+        let _ = builder.build_return(Some(&arr_arg));
+
+        func
+    }
+
+    /// Emits `modus_array_pop(arr: ptr, elem_is_heap: i1) -> ptr`:
+    /// Functional-But-In-Place (FBIP) array pop.
+    /// If len == 0: returns arr unmodified.
+    /// If rc == 1:
+    ///   new_len = len - 1
+    ///   if elem_is_heap: dec_ref element at arr[4 + new_len]
+    ///   store new_len at arr[1]
+    ///   return arr
+    /// If rc > 1:
+    ///   new_len = len - 1
+    ///   allocate new buffer of (4 + cap) words
+    ///   memcpy (4 + new_len) words from arr to new_buf
+    ///   store 1 at new_buf[0] (rc)
+    ///   store new_len at new_buf[1] (len)
+    ///   store cap at new_buf[2] (cap)
+    ///   store 0 at new_buf[3] (res)
+    ///   if elem_is_heap: inc_ref elements [0..new_len)
+    ///   dec_ref(arr)
+    ///   return new_buf
+    fn build_array_pop_fn(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        malloc_fn: FunctionValue<'ctx>,
+        memcpy_fn: FunctionValue<'ctx>,
+        inc_ref_fn: FunctionValue<'ctx>,
+        dec_ref_fn: FunctionValue<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let i8_ptr = context.ptr_type(AddressSpace::default());
+        let i64_type = context.i64_type();
+        let i1_type = context.bool_type();
+        let fn_type = i8_ptr.fn_type(&[i8_ptr.into(), i1_type.into()], false);
+        let func = module.add_function("modus_array_pop", fn_type, None);
+
+        let builder = context.create_builder();
+        let entry_bb = context.append_basic_block(func, "entry");
+        let has_elems_bb = context.append_basic_block(func, "has_elems");
+        let unique_bb = context.append_basic_block(func, "unique_pop");
+        let cow_bb = context.append_basic_block(func, "cow_pop");
+        let ret_early_bb = context.append_basic_block(func, "ret_early");
+
+        builder.position_at_end(entry_bb);
+        let arr_arg = func.get_nth_param(0).unwrap().into_pointer_value();
+        let elem_is_heap = func.get_nth_param(1).unwrap().into_int_value();
+
+        let len_ptr = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    arr_arg,
+                    &[i64_type.const_int(1, false)],
+                    "len_ptr",
+                )
+                .unwrap()
+        };
+        let len = builder
+            .build_load(i64_type, len_ptr, "len")
+            .unwrap()
+            .into_int_value();
+
+        let has_elems = builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                len,
+                i64_type.const_int(0, false),
+                "has_elems",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(has_elems, has_elems_bb, ret_early_bb);
+
+        builder.position_at_end(has_elems_bb);
+        let new_len = builder
+            .build_int_sub(len, i64_type.const_int(1, false), "new_len")
+            .unwrap();
+        let rc = builder
+            .build_load(i64_type, arr_arg, "rc")
+            .unwrap()
+            .into_int_value();
+        let is_unique = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                rc,
+                i64_type.const_int(1, false),
+                "is_unique",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_unique, unique_bb, cow_bb);
+
+        // --- Unique path (rc == 1) ---
+        let unique_dec_bb = context.append_basic_block(func, "unique_dec");
+        let unique_store_bb = context.append_basic_block(func, "unique_store");
+
+        builder.position_at_end(unique_bb);
+        let is_heap_cond = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                elem_is_heap,
+                context.bool_type().const_int(0, false),
+                "is_heap_cond",
+            )
+            .unwrap();
+        let _ = builder.build_conditional_branch(is_heap_cond, unique_dec_bb, unique_store_bb);
+
+        builder.position_at_end(unique_dec_bb);
+        let last_slot = builder
+            .build_int_add(new_len, i64_type.const_int(4, false), "last_slot")
+            .unwrap();
+        let last_elem_ptr = unsafe {
+            builder
+                .build_gep(i64_type, arr_arg, &[last_slot], "last_elem_ptr")
+                .unwrap()
+        };
+        let last_elem_int = builder
+            .build_load(i64_type, last_elem_ptr, "last_elem_int")
+            .unwrap()
+            .into_int_value();
+        let last_elem_p = builder
+            .build_int_to_ptr(last_elem_int, i8_ptr, "last_elem_p")
+            .unwrap();
+        let _ = builder.build_call(dec_ref_fn, &[last_elem_p.into()], "");
+        let _ = builder.build_unconditional_branch(unique_store_bb);
+
+        builder.position_at_end(unique_store_bb);
+        let _ = builder.build_store(len_ptr, new_len);
+        let _ = builder.build_return(Some(&arr_arg));
+
+        // --- COW path (rc > 1) ---
+        let cow_inc_loop_bb = context.append_basic_block(func, "cow_inc_loop");
+        let cow_inc_body_bb = context.append_basic_block(func, "cow_inc_body");
+        let cow_finish_bb = context.append_basic_block(func, "cow_finish");
+
+        builder.position_at_end(cow_bb);
+        let cap_ptr = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    arr_arg,
+                    &[i64_type.const_int(2, false)],
+                    "cap_ptr",
+                )
+                .unwrap()
+        };
+        let cap = builder
+            .build_load(i64_type, cap_ptr, "cap")
+            .unwrap()
+            .into_int_value();
+
+        let cow_words = builder
+            .build_int_add(cap, i64_type.const_int(4, false), "c_words")
+            .unwrap();
+        let cow_size = builder
+            .build_int_mul(cow_words, i64_type.const_int(8, false), "c_size")
+            .unwrap();
+        let cow_buf_call = builder
+            .build_call(malloc_fn, &[cow_size.into()], "c_buf")
+            .unwrap();
+        let cow_buf = cow_buf_call
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_pointer_value();
+
+        // Copy elements + headers up to new_len: (4 + new_len) * 8
+        let copy_words = builder
+            .build_int_add(new_len, i64_type.const_int(4, false), "copy_words")
+            .unwrap();
+        let copy_bytes = builder
+            .build_int_mul(copy_words, i64_type.const_int(8, false), "copy_bytes")
+            .unwrap();
+        let _ = builder.build_call(
+            memcpy_fn,
+            &[cow_buf.into(), arr_arg.into(), copy_bytes.into()],
+            "",
+        );
+
+        // Header: rc = 1, len = new_len, cap = cap, res = 0
+        let _ = builder.build_store(cow_buf, i64_type.const_int(1, false));
+        let nb_len_ptr = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    cow_buf,
+                    &[i64_type.const_int(1, false)],
+                    "nb_len_ptr",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(nb_len_ptr, new_len);
+        let nb_cap_ptr = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    cow_buf,
+                    &[i64_type.const_int(2, false)],
+                    "nb_cap_ptr",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(nb_cap_ptr, cap);
+        let nb_res_ptr = unsafe {
+            builder
+                .build_gep(
+                    i64_type,
+                    cow_buf,
+                    &[i64_type.const_int(3, false)],
+                    "nb_res_ptr",
+                )
+                .unwrap()
+        };
+        let _ = builder.build_store(nb_res_ptr, i64_type.const_int(0, false));
+
+        let has_heap_elems = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                elem_is_heap,
+                context.bool_type().const_int(0, false),
+                "has_heap",
+            )
+            .unwrap();
+        let has_retained = builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                new_len,
+                i64_type.const_int(0, false),
+                "has_retained",
+            )
+            .unwrap();
+        let needs_inc = builder
+            .build_and(has_heap_elems, has_retained, "needs_inc")
+            .unwrap();
+
+        let cow_idx_alloca = builder.build_alloca(i64_type, "cow_idx").unwrap();
+        let _ = builder.build_store(cow_idx_alloca, i64_type.const_int(0, false));
+        let _ = builder.build_conditional_branch(needs_inc, cow_inc_loop_bb, cow_finish_bb);
+
+        builder.position_at_end(cow_inc_loop_bb);
+        let cur_idx = builder
+            .build_load(i64_type, cow_idx_alloca, "cur_idx")
+            .unwrap()
+            .into_int_value();
+        let in_bounds = builder
+            .build_int_compare(IntPredicate::SLT, cur_idx, new_len, "in_bounds")
+            .unwrap();
+        let _ = builder.build_conditional_branch(in_bounds, cow_inc_body_bb, cow_finish_bb);
+
+        builder.position_at_end(cow_inc_body_bb);
+        let cur_offset = builder
+            .build_int_add(cur_idx, i64_type.const_int(4, false), "cur_off")
+            .unwrap();
+        let cur_elem_slot = unsafe {
+            builder
+                .build_gep(i64_type, cow_buf, &[cur_offset], "c_elem_slot")
+                .unwrap()
+        };
+        let cur_elem_int = builder
+            .build_load(i64_type, cur_elem_slot, "c_el_int")
+            .unwrap()
+            .into_int_value();
+        let cur_elem_ptr = builder
+            .build_int_to_ptr(cur_elem_int, i8_ptr, "c_el_ptr")
+            .unwrap();
+        let _ = builder.build_call(inc_ref_fn, &[cur_elem_ptr.into()], "");
+        let next_idx = builder
+            .build_int_add(cur_idx, i64_type.const_int(1, false), "next_idx")
+            .unwrap();
+        let _ = builder.build_store(cow_idx_alloca, next_idx);
+        let _ = builder.build_unconditional_branch(cow_inc_loop_bb);
+
+        builder.position_at_end(cow_finish_bb);
+        let _ = builder.build_call(dec_ref_fn, &[arr_arg.into()], "");
+        let _ = builder.build_return(Some(&cow_buf));
+
+        // --- Ret early ---
+        builder.position_at_end(ret_early_bb);
+        let _ = builder.build_return(Some(&arr_arg));
 
         func
     }

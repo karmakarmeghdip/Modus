@@ -168,7 +168,7 @@ impl<'a> TypeInferrer<'a> {
                         }
                     }
 
-                    if type_name == "ArrayBuilder" {
+                    if type_name == "ArrayBuilder" || type_name == "Array" {
                         match method.as_str() {
                             "new" => {
                                 if !args.is_empty() {
@@ -220,6 +220,29 @@ impl<'a> TypeInferrer<'a> {
                         }
                         self.check_expr(&args[0], &Type::string())?;
                         return Ok(Type::cstring());
+                    }
+
+                    if type_name == "String" && method == "fromCharCode" {
+                        if args.len() != 1 {
+                            return Err(TypeError::new(
+                                TypeErrorKind::ArgCountMismatch {
+                                    expected: 1,
+                                    found: args.len(),
+                                },
+                                Some(expr.span),
+                            ));
+                        }
+                        let code_ty = self.synth_expr(&args[0])?;
+                        if !self.subst.apply(&code_ty).is_integer() {
+                            return Err(TypeError::new(
+                                TypeErrorKind::TypeMismatch {
+                                    expected: "integer".to_string(),
+                                    found: code_ty.to_string(),
+                                },
+                                Some(args[0].span),
+                            ));
+                        }
+                        return Ok(Type::string());
                     }
 
                     if type_name == "CString" && method == "toString" {
@@ -440,6 +463,41 @@ impl<'a> TypeInferrer<'a> {
                             self.check_expr(&args[0], &elem_ty)?;
                             return Ok(applied_ty);
                         }
+                        "set" => {
+                            if args.len() != 2 {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 2,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            let idx_ty = self.synth_expr(&args[0])?;
+                            if !self.subst.apply(&idx_ty).is_integer() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::TypeMismatch {
+                                        expected: "integer".to_string(),
+                                        found: idx_ty.to_string(),
+                                    },
+                                    Some(args[0].span),
+                                ));
+                            }
+                            self.check_expr(&args[1], &elem_ty)?;
+                            return Ok(applied_ty);
+                        }
+                        "pop" => {
+                            if !args.is_empty() {
+                                return Err(TypeError::new(
+                                    TypeErrorKind::ArgCountMismatch {
+                                        expected: 0,
+                                        found: args.len(),
+                                    },
+                                    Some(expr.span),
+                                ));
+                            }
+                            return Ok(applied_ty);
+                        }
                         "build" => {
                             if !args.is_empty() {
                                 return Err(TypeError::new(
@@ -491,7 +549,7 @@ impl<'a> TypeInferrer<'a> {
                         _ => {
                             return Err(TypeError::new(
                                 TypeErrorKind::General(format!(
-                                    "Method '{method}' not found on ArrayBuilder"
+                                    "Method '{method}' not found on Array"
                                 )),
                                 Some(expr.span),
                             ));
@@ -548,6 +606,39 @@ impl<'a> TypeInferrer<'a> {
                         ));
                     }
                     return Ok(Type::i32());
+                }
+
+                if expanded_recv.is_string() && method == "substring" {
+                    if args.len() != 2 {
+                        return Err(TypeError::new(
+                            TypeErrorKind::ArgCountMismatch {
+                                expected: 2,
+                                found: args.len(),
+                            },
+                            Some(expr.span),
+                        ));
+                    }
+                    let start_ty = self.synth_expr(&args[0])?;
+                    if !self.subst.apply(&start_ty).is_integer() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::TypeMismatch {
+                                expected: "integer".to_string(),
+                                found: start_ty.to_string(),
+                            },
+                            Some(args[0].span),
+                        ));
+                    }
+                    let end_ty = self.synth_expr(&args[1])?;
+                    if !self.subst.apply(&end_ty).is_integer() {
+                        return Err(TypeError::new(
+                            TypeErrorKind::TypeMismatch {
+                                expected: "integer".to_string(),
+                                found: end_ty.to_string(),
+                            },
+                            Some(args[1].span),
+                        ));
+                    }
+                    return Ok(Type::string());
                 }
 
                 let resolver = TraitResolver::new(self.env);

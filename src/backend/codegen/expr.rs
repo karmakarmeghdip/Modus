@@ -52,9 +52,9 @@ impl<'ctx> CodeGen<'ctx> {
                     let cmp_call = self
                         .builder
                         .build_call(
-                            self.runtime.strcmp_fn,
+                            self.runtime.str_eq_fn,
                             &[l_ptr.into(), r_ptr.into()],
-                            "strcmp_res",
+                            "str_eq_res",
                         )
                         .map_err(|e| e.to_string())?;
                     let cmp_val = cmp_call
@@ -62,16 +62,11 @@ impl<'ctx> CodeGen<'ctx> {
                         .basic()
                         .unwrap()
                         .into_int_value();
-                    let zero = self.context.i32_type().const_int(0, false);
-                    let pred = if *op == BinaryOp::Eq {
-                        inkwell::IntPredicate::EQ
+                    let res = if *op == BinaryOp::Eq {
+                        cmp_val
                     } else {
-                        inkwell::IntPredicate::NE
+                        self.builder.build_not(cmp_val, "str_neq").unwrap()
                     };
-                    let res = self
-                        .builder
-                        .build_int_compare(pred, cmp_val, zero, "str_eq")
-                        .unwrap();
                     return Ok(res.into());
                 }
 
@@ -219,19 +214,15 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
-                // ArrayBuilder static constructors: ArrayBuilder.new, ArrayBuilder.withCapacity
+                // Array and ArrayBuilder static constructors: Array.new, Array.withCapacity, ArrayBuilder.new, ArrayBuilder.withCapacity
                 if let Atom::Var(r) = receiver
-                    && r == "ArrayBuilder"
+                    && (r == "Array" || r == "ArrayBuilder")
                 {
                     if method == "new" {
                         let cap_val = self.context.i64_type().const_int(4, false);
                         let call = self
                             .builder
-                            .build_call(
-                                self.runtime.array_builder_new_fn,
-                                &[cap_val.into()],
-                                "ab_new",
-                            )
+                            .build_call(self.runtime.array_new_fn, &[cap_val.into()], "arr_new")
                             .unwrap();
                         return Ok(call.try_as_basic_value().basic().unwrap());
                     }
@@ -246,22 +237,80 @@ impl<'ctx> CodeGen<'ctx> {
                         let call = self
                             .builder
                             .build_call(
-                                self.runtime.array_builder_new_fn,
+                                self.runtime.array_new_fn,
                                 &[cap_val.into()],
-                                "ab_with_cap",
+                                "arr_with_cap",
                             )
                             .unwrap();
                         return Ok(call.try_as_basic_value().basic().unwrap());
                     }
                 }
 
-                // String.toCString / CString.toString built-ins
+                // String.toCString built-in: returns pointer to data payload at offset 24
                 if let Atom::Var(r) = receiver
-                    && ((r == "String" && method == "toCString")
-                        || (r == "CString" && method == "toString"))
+                    && r == "String"
+                    && method == "toCString"
                     && let Some(first_arg) = args.first()
                 {
-                    return self.eval_atom(first_arg);
+                    let arg_val = self.eval_atom(first_arg)?;
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let ptr = if arg_val.is_pointer_value() {
+                        arg_val.into_pointer_value()
+                    } else {
+                        self.builder
+                            .build_int_to_ptr(arg_val.into_int_value(), ptr_ty, "str_ptr")
+                            .unwrap()
+                    };
+                    let cstr = unsafe {
+                        self.builder
+                            .build_gep(
+                                self.context.i8_type(),
+                                ptr,
+                                &[self.context.i64_type().const_int(24, false)],
+                                "to_cstr",
+                            )
+                            .unwrap()
+                    };
+                    return Ok(cstr.into());
+                }
+
+                // CString.toString built-in: converts C-string (const char*) to Modus String
+                if let Atom::Var(r) = receiver
+                    && r == "CString"
+                    && method == "toString"
+                    && let Some(first_arg) = args.first()
+                {
+                    let arg_val = self.eval_atom(first_arg)?;
+                    let call = self
+                        .builder
+                        .build_call(
+                            self.runtime.string_from_c_str_fn,
+                            &[arg_val.into()],
+                            "c_to_str",
+                        )
+                        .unwrap();
+                    return Ok(call.try_as_basic_value().basic().unwrap());
+                }
+
+                // String.fromCharCode built-in: creates 1-char Modus String from integer code
+                if let Atom::Var(r) = receiver
+                    && r == "String"
+                    && method == "fromCharCode"
+                    && let Some(first_arg) = args.first()
+                {
+                    let arg_val = self.eval_atom(first_arg)?;
+                    let code_i32 = self
+                        .coerce_to_type(arg_val, self.context.i32_type().into())?
+                        .into_int_value();
+                    let call = self
+                        .builder
+                        .build_call(
+                            self.runtime.str_from_char_code_fn,
+                            &[code_i32.into()],
+                            "char_str",
+                        )
+                        .unwrap();
+                    return Ok(call.try_as_basic_value().basic().unwrap());
                 }
 
                 // Pointer instance methods: read, write, offset, address, isNull, cast, toString
@@ -423,11 +472,24 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
-                if (method == "cast" || method == "toString") && args.is_empty() {
+                if method == "cast" && args.is_empty() {
                     let recv_val = self.eval_atom(receiver)?;
                     if recv_val.is_pointer_value() {
                         return Ok(recv_val);
                     }
+                }
+
+                if method == "toString" && args.is_empty() {
+                    let recv_val = self.eval_atom(receiver)?;
+                    let call = self
+                        .builder
+                        .build_call(
+                            self.runtime.string_from_c_str_fn,
+                            &[recv_val.into()],
+                            "ptr_to_str",
+                        )
+                        .unwrap();
+                    return Ok(call.try_as_basic_value().basic().unwrap());
                 }
 
                 if method == "push" && args.len() == 1 {
@@ -487,9 +549,121 @@ impl<'ctx> CodeGen<'ctx> {
                         let call = self
                             .builder
                             .build_call(
-                                self.runtime.array_builder_push_fn,
+                                self.runtime.array_push_fn,
                                 &[ptr.into(), elem_i64.into(), is_heap_val.into()],
-                                "ab_push",
+                                "arr_push",
+                            )
+                            .unwrap();
+                        return Ok(call.try_as_basic_value().basic().unwrap());
+                    }
+                }
+
+                if method == "set" && args.len() == 2 {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let is_arr = recv_ty
+                        .as_ref()
+                        .map(|t| t.is_array_builder())
+                        .unwrap_or(false);
+                    if is_arr || recv_ty.is_none() {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "arr_ptr")
+                                .unwrap()
+                        };
+                        let idx_val = self.eval_atom(&args[0])?;
+                        let idx_i64 = self
+                            .coerce_to_type(idx_val, self.context.i64_type().into())?
+                            .into_int_value();
+                        let elem_val = self.eval_atom(&args[1])?;
+                        let elem_i64 = if elem_val.is_pointer_value() {
+                            self.builder
+                                .build_ptr_to_int(
+                                    elem_val.into_pointer_value(),
+                                    self.context.i64_type(),
+                                    "ptr_int",
+                                )
+                                .unwrap()
+                        } else if elem_val.is_float_value() {
+                            let fv = elem_val.into_float_value();
+                            if fv.get_type() == self.context.f32_type() {
+                                let f64_val = self
+                                    .builder
+                                    .build_float_ext(fv, self.context.f64_type(), "f_ext")
+                                    .unwrap();
+                                self.builder
+                                    .build_bit_cast(f64_val, self.context.i64_type(), "f_bits")
+                                    .unwrap()
+                                    .into_int_value()
+                            } else {
+                                self.builder
+                                    .build_bit_cast(fv, self.context.i64_type(), "f_bits")
+                                    .unwrap()
+                                    .into_int_value()
+                            }
+                        } else {
+                            self.coerce_to_type(elem_val, self.context.i64_type().into())?
+                                .into_int_value()
+                        };
+                        let is_heap = self
+                            .get_atom_type(&args[1])
+                            .map(|t| crate::ir::liveness::is_heap_type(&t))
+                            .unwrap_or(false);
+                        let is_heap_val = self
+                            .context
+                            .bool_type()
+                            .const_int(if is_heap { 1 } else { 0 }, false);
+                        let call = self
+                            .builder
+                            .build_call(
+                                self.runtime.array_set_fn,
+                                &[
+                                    ptr.into(),
+                                    idx_i64.into(),
+                                    elem_i64.into(),
+                                    is_heap_val.into(),
+                                ],
+                                "arr_set",
+                            )
+                            .unwrap();
+                        return Ok(call.try_as_basic_value().basic().unwrap());
+                    }
+                }
+
+                if method == "pop" && args.is_empty() {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let is_arr = recv_ty
+                        .as_ref()
+                        .map(|t| t.is_array_builder())
+                        .unwrap_or(false);
+                    if is_arr || recv_ty.is_none() {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "arr_ptr")
+                                .unwrap()
+                        };
+                        let is_heap = recv_ty
+                            .as_ref()
+                            .and_then(|t| t.unwrap_array_builder().cloned())
+                            .map(|et| crate::ir::liveness::is_heap_type(&et))
+                            .unwrap_or(false);
+                        let is_heap_val = self
+                            .context
+                            .bool_type()
+                            .const_int(if is_heap { 1 } else { 0 }, false);
+                        let call = self
+                            .builder
+                            .build_call(
+                                self.runtime.array_pop_fn,
+                                &[ptr.into(), is_heap_val.into()],
+                                "arr_pop",
                             )
                             .unwrap();
                         return Ok(call.try_as_basic_value().basic().unwrap());
@@ -524,9 +698,9 @@ impl<'ctx> CodeGen<'ctx> {
                         let call = self
                             .builder
                             .build_call(
-                                self.runtime.array_builder_build_fn,
+                                self.runtime.array_build_fn,
                                 &[ptr.into(), is_heap_val.into()],
-                                "ab_build",
+                                "arr_build",
                             )
                             .unwrap();
                         return Ok(call.try_as_basic_value().basic().unwrap());
@@ -603,15 +777,16 @@ impl<'ctx> CodeGen<'ctx> {
                         .as_ref()
                         .map(|t| t.is_array() || t.is_array_builder())
                         .unwrap_or(false);
-                    let is_str = recv_ty.as_ref().map(|t| t.is_string()).unwrap_or(false);
-                    if is_arr || (!is_str && recv_ty.is_none()) {
+                    let is_str = recv_ty.as_ref().map(|t| t.is_string()).unwrap_or(false)
+                        || matches!(receiver, Atom::Literal(crate::ast::Literal::String(_)));
+                    if is_arr || is_str || recv_ty.is_none() {
                         let recv_val = self.eval_atom(receiver)?;
                         let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
                         let ptr = if recv_val.is_pointer_value() {
                             recv_val.into_pointer_value()
                         } else {
                             self.builder
-                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "arr_ptr")
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "len_ptr_cast")
                                 .unwrap()
                         };
                         let len_ptr = unsafe {
@@ -620,31 +795,15 @@ impl<'ctx> CodeGen<'ctx> {
                                     self.context.i64_type(),
                                     ptr,
                                     &[self.context.i64_type().const_int(1, false)],
-                                    "arr_len_ptr",
+                                    "len_ptr",
                                 )
                                 .unwrap()
                         };
                         let len_val = self
                             .builder
-                            .build_load(self.context.i64_type(), len_ptr, "arr_len")
+                            .build_load(self.context.i64_type(), len_ptr, "len_val")
                             .unwrap();
                         return Ok(len_val);
-                    }
-                    if is_str {
-                        let recv_val = self.eval_atom(receiver)?;
-                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
-                        let ptr = if recv_val.is_pointer_value() {
-                            recv_val.into_pointer_value()
-                        } else {
-                            self.builder
-                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "str_ptr")
-                                .unwrap()
-                        };
-                        let len_call = self
-                            .builder
-                            .build_call(self.runtime.strlen_fn, &[ptr.into()], "str_len")
-                            .unwrap();
-                        return Ok(len_call.try_as_basic_value().basic().unwrap());
                     }
                 }
 
@@ -686,13 +845,19 @@ impl<'ctx> CodeGen<'ctx> {
                             )
                             .unwrap();
 
-                        let len_call = self
+                        let len_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    i64_type,
+                                    ptr,
+                                    &[i64_type.const_int(1, false)],
+                                    "len_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let len = self
                             .builder
-                            .build_call(self.runtime.strlen_fn, &[ptr.into()], "str_len")
-                            .unwrap();
-                        let len = len_call
-                            .try_as_basic_value()
-                            .basic()
+                            .build_load(i64_type, len_ptr, "len")
                             .unwrap()
                             .into_int_value();
 
@@ -724,9 +889,14 @@ impl<'ctx> CodeGen<'ctx> {
                                 .build_conditional_branch(invalid, oob_bb, in_bounds_bb);
 
                         self.builder.position_at_end(in_bounds_bb);
+                        // Data starts at offset 24 bytes in the Modus String struct
+                        let char_offset = self
+                            .builder
+                            .build_int_add(i64_type.const_int(24, false), idx_i64, "char_off")
+                            .unwrap();
                         let char_ptr = unsafe {
                             self.builder
-                                .build_gep(self.context.i8_type(), ptr, &[idx_i64], "char_ptr")
+                                .build_gep(self.context.i8_type(), ptr, &[char_offset], "char_ptr")
                                 .unwrap()
                         };
                         let byte_val = self
@@ -756,6 +926,48 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                 }
 
+                if method == "substring" && args.len() == 2 {
+                    let recv_ty = self.get_atom_type(receiver);
+                    let is_str = recv_ty.as_ref().map(|t| t.is_string()).unwrap_or(true);
+                    if is_str {
+                        let recv_val = self.eval_atom(receiver)?;
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                        let ptr = if recv_val.is_pointer_value() {
+                            recv_val.into_pointer_value()
+                        } else {
+                            self.builder
+                                .build_int_to_ptr(recv_val.into_int_value(), ptr_ty, "str_ptr")
+                                .unwrap()
+                        };
+                        let start_val = self.eval_atom(&args[0])?.into_int_value();
+                        let end_val = self.eval_atom(&args[1])?.into_int_value();
+                        let i64_type = self.context.i64_type();
+                        let start_i64 = if start_val.get_type().get_bit_width() < 64 {
+                            self.builder
+                                .build_int_s_extend(start_val, i64_type, "ext_start")
+                                .unwrap()
+                        } else {
+                            start_val
+                        };
+                        let end_i64 = if end_val.get_type().get_bit_width() < 64 {
+                            self.builder
+                                .build_int_s_extend(end_val, i64_type, "ext_end")
+                                .unwrap()
+                        } else {
+                            end_val
+                        };
+                        let call = self
+                            .builder
+                            .build_call(
+                                self.runtime.str_substring_fn,
+                                &[ptr.into(), start_i64.into(), end_i64.into()],
+                                "substr_res",
+                            )
+                            .unwrap();
+                        return Ok(call.try_as_basic_value().basic().unwrap());
+                    }
+                }
+
                 // Built-in Show.show for primitives
                 if method == "show" && args.is_empty() {
                     let recv_ty = self.get_atom_type(receiver);
@@ -779,14 +991,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 )
                                 .unwrap()
                         };
-                        let true_str = self
-                            .builder
-                            .build_global_string_ptr("true", "str_true")
-                            .unwrap();
-                        let false_str = self
-                            .builder
-                            .build_global_string_ptr("false", "str_false")
-                            .unwrap();
+                        let true_str = self.get_or_create_string_literal("true");
+                        let false_str = self.get_or_create_string_literal("false");
                         let res = self
                             .builder
                             .build_select(
@@ -806,7 +1012,7 @@ impl<'ctx> CodeGen<'ctx> {
                         return Ok(recv_val);
                     }
 
-                    // Integers -> snprintf "%ld" or "%lu"
+                    // Integers -> snprintf "%ld" or "%lu" into Modus string buffer
                     if recv_val.is_int_value() {
                         let int_val = recv_val.into_int_value();
                         let i64_type = self.context.i64_type();
@@ -829,30 +1035,80 @@ impl<'ctx> CodeGen<'ctx> {
                             .builder
                             .build_global_string_ptr(fmt, "fmt_int")
                             .unwrap();
-                        let buf_size = i64_type.const_int(32, false);
+                        let cap_val = 32u64;
+                        let alloc_bytes = i64_type.const_int(24 + cap_val + 1, false);
                         let buf_call = self
                             .builder
-                            .build_call(self.runtime.malloc_fn, &[buf_size.into()], "int_buf")
+                            .build_call(self.runtime.alloc_fn, &[alloc_bytes.into()], "int_str")
                             .unwrap();
                         let buf = buf_call
                             .try_as_basic_value()
                             .basic()
                             .unwrap()
                             .into_pointer_value();
-                        let _ = self.builder.build_call(
-                            self.runtime.snprintf_fn,
-                            &[
-                                buf.into(),
-                                buf_size.into(),
-                                fmt_str.as_basic_value_enum().into(),
-                                ext_val.into(),
-                            ],
-                            "",
-                        );
+
+                        let data_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    buf,
+                                    &[i64_type.const_int(24, false)],
+                                    "data_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let snp_call = self
+                            .builder
+                            .build_call(
+                                self.runtime.snprintf_fn,
+                                &[
+                                    data_ptr.into(),
+                                    i64_type.const_int(cap_val + 1, false).into(),
+                                    fmt_str.as_basic_value_enum().into(),
+                                    ext_val.into(),
+                                ],
+                                "snp",
+                            )
+                            .unwrap();
+                        let written = snp_call
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_int_value();
+                        let len_i64 = self
+                            .builder
+                            .build_int_s_extend(written, i64_type, "len_i64")
+                            .unwrap();
+
+                        let len_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    i64_type,
+                                    buf,
+                                    &[i64_type.const_int(1, false)],
+                                    "len_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let _ = self.builder.build_store(len_ptr, len_i64);
+                        let cap_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    i64_type,
+                                    buf,
+                                    &[i64_type.const_int(2, false)],
+                                    "cap_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let _ = self
+                            .builder
+                            .build_store(cap_ptr, i64_type.const_int(cap_val, false));
+
                         return Ok(buf.into());
                     }
 
-                    // Floats -> snprintf "%g"
+                    // Floats -> snprintf "%g" into Modus string buffer
                     if recv_val.is_float_value() {
                         let flt_val = recv_val.into_float_value();
                         let f64_type = self.context.f64_type();
@@ -867,26 +1123,77 @@ impl<'ctx> CodeGen<'ctx> {
                             .builder
                             .build_global_string_ptr("%g", "fmt_float")
                             .unwrap();
-                        let buf_size = self.context.i64_type().const_int(64, false);
+                        let cap_val = 64u64;
+                        let i64_type = self.context.i64_type();
+                        let alloc_bytes = i64_type.const_int(24 + cap_val + 1, false);
                         let buf_call = self
                             .builder
-                            .build_call(self.runtime.malloc_fn, &[buf_size.into()], "flt_buf")
+                            .build_call(self.runtime.alloc_fn, &[alloc_bytes.into()], "flt_str")
                             .unwrap();
                         let buf = buf_call
                             .try_as_basic_value()
                             .basic()
                             .unwrap()
                             .into_pointer_value();
-                        let _ = self.builder.build_call(
-                            self.runtime.snprintf_fn,
-                            &[
-                                buf.into(),
-                                buf_size.into(),
-                                fmt_str.as_basic_value_enum().into(),
-                                ext_val.into(),
-                            ],
-                            "",
-                        );
+
+                        let data_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    self.context.i8_type(),
+                                    buf,
+                                    &[i64_type.const_int(24, false)],
+                                    "data_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let snp_call = self
+                            .builder
+                            .build_call(
+                                self.runtime.snprintf_fn,
+                                &[
+                                    data_ptr.into(),
+                                    i64_type.const_int(cap_val + 1, false).into(),
+                                    fmt_str.as_basic_value_enum().into(),
+                                    ext_val.into(),
+                                ],
+                                "snp",
+                            )
+                            .unwrap();
+                        let written = snp_call
+                            .try_as_basic_value()
+                            .basic()
+                            .unwrap()
+                            .into_int_value();
+                        let len_i64 = self
+                            .builder
+                            .build_int_s_extend(written, i64_type, "len_i64")
+                            .unwrap();
+
+                        let len_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    i64_type,
+                                    buf,
+                                    &[i64_type.const_int(1, false)],
+                                    "len_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let _ = self.builder.build_store(len_ptr, len_i64);
+                        let cap_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    i64_type,
+                                    buf,
+                                    &[i64_type.const_int(2, false)],
+                                    "cap_ptr",
+                                )
+                                .unwrap()
+                        };
+                        let _ = self
+                            .builder
+                            .build_store(cap_ptr, i64_type.const_int(cap_val, false));
+
                         return Ok(buf.into());
                     }
                 }
@@ -1062,6 +1369,34 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap()
                 };
                 let _ = self.builder.build_store(len_ptr, len_val);
+
+                // Store cap at index 2
+                let cap_ptr = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i64_type(),
+                            arr_ptr,
+                            &[self.context.i64_type().const_int(2, false)],
+                            "cap_ptr",
+                        )
+                        .unwrap()
+                };
+                let _ = self.builder.build_store(cap_ptr, len_val);
+
+                // Store 0 at index 3
+                let res_ptr = unsafe {
+                    self.builder
+                        .build_gep(
+                            self.context.i64_type(),
+                            arr_ptr,
+                            &[self.context.i64_type().const_int(3, false)],
+                            "res_ptr",
+                        )
+                        .unwrap()
+                };
+                let _ = self
+                    .builder
+                    .build_store(res_ptr, self.context.i64_type().const_int(0, false));
 
                 // Store elements
                 for (i, el) in elements.iter().enumerate() {

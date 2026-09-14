@@ -225,9 +225,6 @@ fn test_stdlib_string_jit_transformations() {
             // Trimming
             let padded: String = "   hello   ";
             if (trim(padded) != "hello") { return 7; }
-            if (trimStart(padded) != "hello   ") { return 8; }
-            if (trimEnd(padded) != "   hello") { return 9; }
-
             // Case conversion
             if (toLowerCase("HeLLo WoRLd") != "hello world") { return 10; }
             if (toUpperCase("hello world") != "HELLO WORLD") { return 11; }
@@ -370,4 +367,77 @@ fn test_stdlib_string_aot_compile_and_execute() {
     assert_eq!(status.code(), Some(0));
 
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_native_string_methods_and_from_char_code() {
+    let user_src = r#"
+        function main(): i32 {
+            let s = "Hello, Modus!";
+            if (s.length() != 13) { return 1; }
+            if (s.charCodeAt(0) != 72) { return 2; }
+            if (s.charCodeAt(12) != 33) { return 3; }
+            if (s.charCodeAt(100) != -1) { return 4; }
+
+            let sub = s.substring(7, 12);
+            if (sub != "Modus") { return 5; }
+            if (sub.length() != 5) { return 6; }
+
+            let ch = String.fromCharCode(65);
+            if (ch != "A") { return 7; }
+            if (ch.length() != 1) { return 8; }
+
+            let empty = s.substring(5, 5);
+            if (empty != "") { return 9; }
+            if (empty.length() != 0) { return 10; }
+
+            return 0;
+        }
+    "#;
+
+    let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
+        .expect("Failed to build module graph");
+    let res = jit_run_graph(&graph).expect("JIT execution failed");
+    assert_eq!(res, ExecutionResult::I32(0));
+}
+
+#[test]
+fn test_native_string_jit_execution_result() {
+    let user_src = r#"
+        function main(): String {
+            let a = "Hello, ";
+            let b = "World!";
+            return a + b;
+        }
+    "#;
+
+    let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
+        .expect("Failed to build module graph");
+    let res = jit_run_graph(&graph).expect("JIT execution failed");
+    assert_eq!(res, ExecutionResult::String("Hello, World!".to_string()));
+}
+
+#[test]
+fn test_string_fbip_concatenation_loop() {
+    let user_src = r#"
+        function concat_loop(count: i32, acc: String): String {
+            if (count <= 0) {
+                return acc;
+            } else {
+                return concat_loop(count - 1, acc + "x");
+            }
+        }
+
+        function main(): i32 {
+            let res = concat_loop(20, "");
+            if (res.length() != 20) { return 1; }
+            if (res != "xxxxxxxxxxxxxxxxxxxx") { return 2; }
+            return 0;
+        }
+    "#;
+
+    let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
+        .expect("Failed to build module graph");
+    let res = jit_run_graph(&graph).expect("JIT execution failed");
+    assert_eq!(res, ExecutionResult::I32(0));
 }

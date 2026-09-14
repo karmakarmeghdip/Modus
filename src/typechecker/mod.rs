@@ -386,13 +386,11 @@ fn register_extern_sig(
         Type::void()
     };
 
-    let is_effectful = return_type.is_io();
-
-    // Check purity & dead computation rule for pure function returning void
-    if !is_effectful && return_type.is_void() {
+    if !return_type.is_io() {
         return Err(TypeError::new(
-            TypeErrorKind::DeadComputation {
+            TypeErrorKind::ExternFunctionMustReturnIO {
                 function_name: func_decl.name.clone(),
+                found: return_type.to_string(),
             },
             Some(span),
         ));
@@ -403,9 +401,14 @@ fn register_extern_sig(
         type_params: func_decl.type_params.clone(),
         params,
         return_type,
-        is_effectful,
+        is_effectful: true,
         span,
-        symbol_name: Some(func_decl.name.clone()),
+        symbol_name: Some(
+            func_decl
+                .symbol_name
+                .clone()
+                .unwrap_or_else(|| func_decl.name.clone()),
+        ),
         is_c_abi: true,
     };
 

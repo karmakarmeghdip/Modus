@@ -12,9 +12,8 @@ export function stderr_fileno(): i32 => 2;
 extern "C" {
     function write(fd: i32, buf: Pointer(u8), count: u64): IO(i64);
     function read(fd: i32, buf: Pointer(u8), count: u64): IO(i64);
-    function strlen(s: CString): u64;
     function fflush(stream: Pointer(void)): IO(i32);
-    function malloc(size: u64): Pointer(u8);
+    function malloc(size: u64): IO(Pointer(u8));
     function free(ptr: Pointer(void)): IO(void);
 }
 
@@ -38,7 +37,7 @@ export function readRaw(fd: i32, buf: Pointer(u8), count: u64): IO(Result(i64, I
 
 export function print(s: String): IO(void) {
     let cstr: CString = String.toCString(s);
-    let len: u64 = strlen(cstr);
+    let len: u64 = s.length() as u64;
     perform write(1, cstr, len);
     return IO.pure(());
 }
@@ -51,7 +50,7 @@ export function println(s: String): IO(void) {
 
 export function eprint(s: String): IO(void) {
     let cstr: CString = String.toCString(s);
-    let len: u64 = strlen(cstr);
+    let len: u64 = s.length() as u64;
     perform write(2, cstr, len);
     return IO.pure(());
 }
@@ -111,7 +110,7 @@ function io_read_line_loop(fd: i32, buf: Pointer(u8), cap: i32, len: i32): IO(Re
 
 export function readLineFrom(fd: i32): IO(Result(String, IOError)) {
     let cap: i32 = 4096;
-    let buf: Pointer(u8) = malloc(4096);
+    let buf: Pointer(u8) = perform malloc(4096);
     if (buf.isNull()) {
         return Result.Err({ code: -1, message: "Failed to allocate buffer" });
     } else {

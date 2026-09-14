@@ -15,6 +15,9 @@ use std::collections::{HashMap, HashSet};
 /// Checks if a type is heap-allocated and managed by Perceus reference counting.
 /// Primitives (numbers, bool, void, unit) are unboxed and require no RC.
 pub fn is_heap_type(ty: &Type) -> bool {
+    if ty.is_string() {
+        return true;
+    }
     match ty {
         Type::Primitive(_) | Type::Unit => false,
         Type::Named { name, args } => {

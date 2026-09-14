@@ -254,7 +254,7 @@ pub fn build_shared_library(
     let mut envs = envs;
     if let Some(entry_env) = envs.get_mut(&graph.entry) {
         for sig in entry_env.functions.values_mut() {
-            if sig.symbol_name.is_some() {
+            if sig.symbol_name.is_some() && !sig.is_c_abi {
                 sig.symbol_name = Some(super::mangling::mangle_symbol(&lib_ident, &sig.name));
             }
         }

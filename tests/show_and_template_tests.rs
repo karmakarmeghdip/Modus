@@ -4,7 +4,6 @@ use modus::desugar::desugar_program;
 use modus::ir::{apply_perceus_and_fbip, convert_closures, lower_program};
 use modus::parser::{parse_expr, parse_program};
 use modus::typechecker::{check_program, infer::TypeInferrer, scope::Environment};
-use std::ffi::CStr;
 
 fn compile_to_llvm<'ctx>(
     context: &'ctx Context,
@@ -35,11 +34,14 @@ fn jit_eval_string(source: &str, module_name: &str) -> String {
 
     unsafe {
         let main_fn = execution_engine
-            .get_function::<unsafe extern "C" fn() -> *const std::ffi::c_char>("main")
+            .get_function::<unsafe extern "C" fn() -> *const u8>("main")
             .expect("Failed to find main function");
         let ptr = main_fn.call();
         assert!(!ptr.is_null(), "Returned string pointer was null");
-        CStr::from_ptr(ptr).to_str().unwrap().to_string()
+        let len = *(ptr.add(8) as *const i64);
+        let data_ptr = ptr.add(24);
+        let slice = std::slice::from_raw_parts(data_ptr, len as usize);
+        std::str::from_utf8(slice).unwrap().to_string()
     }
 }
 

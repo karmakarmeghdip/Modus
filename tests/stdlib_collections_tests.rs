@@ -314,3 +314,149 @@ fn test_stdlib_collections_aot_compile_and_execute() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_array_primitive_fbip_methods() {
+    let user_src = r#"
+        function main(): i32 {
+            // 1. Array.new and Array.withCapacity
+            let arr0: [i64] = Array.new();
+            if (!arr0.isEmpty()) { return 1; }
+            if (arr0.length() != 0) { return 2; }
+            if (arr0.capacity() < 4) { return 3; }
+
+            let arr_cap: [i64] = Array.withCapacity(10);
+            if (arr_cap.capacity() < 10) { return 4; }
+
+            // 2. Literal array methods
+            let a: [i64] = [10, 20, 30];
+            if (a.isEmpty()) { return 5; }
+            if (a.length() != 3) { return 6; }
+            if (a.capacity() < 3) { return 7; }
+
+            // 3. push
+            let a_pushed = a.push(40);
+            if (a_pushed.length() != 4) { return 8; }
+            if (a_pushed[3] != 40) { return 9; }
+
+            // 4. set
+            let a_set = a_pushed.set(1, 99);
+            if (a_set.length() != 4) { return 10; }
+            if (a_set[1] != 99) { return 11; }
+            if (a_set[0] != 10) { return 12; }
+            if (a_set[2] != 30) { return 13; }
+
+            // 5. pop
+            let a_popped = a_set.pop();
+            if (a_popped.length() != 3) { return 14; }
+            if (a_popped[0] != 10) { return 15; }
+            if (a_popped[1] != 99) { return 16; }
+            if (a_popped[2] != 30) { return 17; }
+
+            // 6. pop to empty
+            let p2 = a_popped.pop();
+            let p1 = p2.pop();
+            let p0 = p1.pop();
+            if (!p0.isEmpty()) { return 18; }
+            if (p0.length() != 0) { return 19; }
+            let p_extra = p0.pop();
+            if (p_extra.length() != 0) { return 20; }
+
+            return 0;
+        }
+    "#;
+
+    let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
+        .expect("Failed to build module graph");
+    let res = jit_run_graph(&graph).expect("JIT execution failed");
+    match res {
+        ExecutionResult::I32(val) => {
+            assert_eq!(val, 0, "Array FBIP methods test failed with code {val}");
+        }
+        _ => panic!("Expected I32 return"),
+    }
+}
+
+#[test]
+fn test_array_primitive_cow_and_heap_elements() {
+    let user_src = r#"
+        function main(): i32 {
+            // Test COW branching (shared reference preservation)
+            let original: [i64] = [100, 200, 300];
+            let copy_ref: [i64] = original;
+            let updated = original.set(0, 999);
+
+            // Verify original / copy_ref is intact
+            if (copy_ref[0] != 100) { return 1; }
+            if (copy_ref[1] != 200) { return 2; }
+            if (copy_ref[2] != 300) { return 3; }
+
+            // Verify updated has the new value
+            if (updated[0] != 999) { return 4; }
+            if (updated[1] != 200) { return 5; }
+            if (updated[2] != 300) { return 6; }
+
+            // Test COW on pop
+            let popped = copy_ref.pop();
+            if (copy_ref.length() != 3) { return 7; }
+            if (popped.length() != 2) { return 8; }
+            if (popped[0] != 100) { return 9; }
+            if (popped[1] != 200) { return 10; }
+
+            // Test with heap elements (String)
+            let strs: [String] = ["alpha", "beta", "gamma"];
+            let strs_shared = strs;
+            let strs_mod = strs.set(1, "MODUS");
+            if (strs_shared[1] != "beta") { return 11; }
+            if (strs_mod[1] != "MODUS") { return 12; }
+            let strs_pop = strs_mod.pop();
+            if (strs_pop.length() != 2) { return 13; }
+            if (strs_pop[0] != "alpha") { return 14; }
+            if (strs_pop[1] != "MODUS") { return 15; }
+
+            return 0;
+        }
+    "#;
+
+    let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
+        .expect("Failed to build module graph");
+    let res = jit_run_graph(&graph).expect("JIT execution failed");
+    match res {
+        ExecutionResult::I32(val) => {
+            assert_eq!(val, 0, "Array COW test failed with code {val}");
+        }
+        _ => panic!("Expected I32 return"),
+    }
+}
+
+#[test]
+fn test_array_primitive_aot_compile_and_execute() {
+    let user_src = r#"
+        function main(): IO(i32) {
+            let arr: [i64] = Array.withCapacity(8);
+            let a1 = arr.push(10).push(20).push(30);
+            let a2 = a1.set(1, 999);
+            let a3 = a2.pop();
+            if (a3.length() != 2) { return IO.pure(1); }
+            if (a3[0] != 10) { return IO.pure(2); }
+            if (a3[1] != 999) { return IO.pure(3); }
+            return IO.pure(0);
+        }
+    "#;
+
+    let temp_dir = std::env::temp_dir().join(format!("modus_arr_aot_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let main_file = temp_dir.join("main.mds");
+    let output_bin = temp_dir.join("arr_app");
+    std::fs::write(&main_file, user_src).expect("Failed to write main.mds");
+
+    build_executable(&main_file, &output_bin, None).expect("AOT build failed");
+    assert!(output_bin.exists());
+
+    let status = std::process::Command::new(&output_bin)
+        .status()
+        .expect("Failed to run AOT binary");
+    assert_eq!(status.code(), Some(0));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

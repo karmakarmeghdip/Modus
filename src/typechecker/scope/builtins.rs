@@ -65,7 +65,17 @@ impl Environment {
             },
         );
 
-        // Register built-in ArrayBuilder(T) type
+        // Register built-in Array(T) and ArrayBuilder(T) types
+        self.types.insert(
+            "Array".to_string(),
+            TypeDefInfo::Builtin {
+                name: "Array".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "T".to_string(),
+                    bound: None,
+                }],
+            },
+        );
         self.types.insert(
             "ArrayBuilder".to_string(),
             TypeDefInfo::Builtin {
@@ -77,7 +87,18 @@ impl Environment {
             },
         );
 
-        // Register ArrayBuilder.new constructor: () => ArrayBuilder(T)
+        // Register Array.new and ArrayBuilder.new constructor: () => [T]
+        self.constructors.insert(
+            "Array.new".to_string(),
+            ConstructorInfo::Function {
+                params: vec![],
+                return_type: Type::array_builder(Type::GenericParam("T".to_string())),
+                type_params: vec![ast::TypeParam {
+                    name: "T".to_string(),
+                    bound: None,
+                }],
+            },
+        );
         self.constructors.insert(
             "ArrayBuilder.new".to_string(),
             ConstructorInfo::Function {
@@ -90,7 +111,18 @@ impl Environment {
             },
         );
 
-        // Register ArrayBuilder.withCapacity constructor: (i64) => ArrayBuilder(T)
+        // Register Array.withCapacity and ArrayBuilder.withCapacity constructor: (i64) => [T]
+        self.constructors.insert(
+            "Array.withCapacity".to_string(),
+            ConstructorInfo::Function {
+                params: vec![Type::i64()],
+                return_type: Type::array_builder(Type::GenericParam("T".to_string())),
+                type_params: vec![ast::TypeParam {
+                    name: "T".to_string(),
+                    bound: None,
+                }],
+            },
+        );
         self.constructors.insert(
             "ArrayBuilder.withCapacity".to_string(),
             ConstructorInfo::Function {

@@ -80,9 +80,10 @@ impl PerceusCtx {
                     // For each variable used by this expression:
                     // If the expression consumes it (e.g. into record, array, or call),
                     // track whether each occurrence is a move or shared copy.
-                    if self.expr_consumes_operands(&optimized_value) {
+                    let consumed = self.expr_consumed_vars(&optimized_value);
+                    if !consumed.is_empty() {
                         let mut occurrences: HashMap<String, usize> = HashMap::new();
-                        for v in optimized_value.var_occurrences() {
+                        for v in consumed {
                             *occurrences.entry(v).or_insert(0) += 1;
                         }
 
@@ -105,12 +106,23 @@ impl PerceusCtx {
                         }
                     }
 
+                    let is_projection = matches!(
+                        &optimized_value,
+                        AnfExpr::FieldAccess { .. }
+                            | AnfExpr::Index { .. }
+                            | AnfExpr::TupleAccess { .. }
+                    );
+
                     new_stmts.push(AnfStmt::Let {
                         var: var.clone(),
                         ty: ty.clone(),
                         value: optimized_value,
                         span: *span,
                     });
+
+                    if is_projection && self.is_heap_var(var) {
+                        new_stmts.push(AnfStmt::IncRef { var: var.clone() });
+                    }
 
                     // Insert dec_ref for any heap variables that died at this statement unconsumed
                     for died_var in &stmt_liveness.died {
@@ -126,9 +138,10 @@ impl PerceusCtx {
                 }
 
                 AnfStmt::Expr(expr) => {
-                    if self.expr_consumes_operands(expr) {
+                    let consumed = self.expr_consumed_vars(expr);
+                    if !consumed.is_empty() {
                         let mut occurrences: HashMap<String, usize> = HashMap::new();
-                        for v in expr.var_occurrences() {
+                        for v in consumed {
                             *occurrences.entry(v).or_insert(0) += 1;
                         }
 
@@ -245,24 +258,89 @@ impl PerceusCtx {
         AnfBlock::new(new_stmts, new_tail, block.span)
     }
 
-    /// Determines if an expression consumes ownership of its operand values.
-    fn expr_consumes_operands(&self, expr: &AnfExpr) -> bool {
-        matches!(
-            expr,
-            AnfExpr::Record { .. }
-                | AnfExpr::Array { .. }
-                | AnfExpr::Tuple { .. }
-                | AnfExpr::Variant { .. }
-                | AnfExpr::MakeClosure { .. }
-                | AnfExpr::Call { .. }
-                | AnfExpr::MethodCall { .. }
-                | AnfExpr::CallClosure { .. }
-                | AnfExpr::Atom(Atom::Var(_))
-                | AnfExpr::Unary {
-                    op: crate::desugar::DesugaredUnaryOp::Perform,
-                    ..
+    /// Returns the variables consumed by value by this expression.
+    fn expr_consumed_vars(&self, expr: &AnfExpr) -> Vec<String> {
+        match expr {
+            AnfExpr::Record { fields } => fields
+                .iter()
+                .filter_map(|(_, a)| a.as_var().map(|s| s.to_string()))
+                .collect(),
+            AnfExpr::ReuseRecord { fields, .. } => fields
+                .iter()
+                .filter_map(|(_, a)| a.as_var().map(|s| s.to_string()))
+                .collect(),
+            AnfExpr::Array { elements } | AnfExpr::Tuple { elements } => elements
+                .iter()
+                .filter_map(|a| a.as_var().map(|s| s.to_string()))
+                .collect(),
+            AnfExpr::Variant { args, .. } => args
+                .iter()
+                .filter_map(|a| a.as_var().map(|s| s.to_string()))
+                .collect(),
+            AnfExpr::MakeClosure { env, .. } => env
+                .as_ref()
+                .and_then(|a| a.as_var())
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default(),
+            AnfExpr::Call { callee, args } => {
+                let mut vars = Vec::new();
+                if let Some(v) = callee.as_var() {
+                    vars.push(v.to_string());
                 }
-        )
+                for a in args {
+                    if let Some(v) = a.as_var() {
+                        vars.push(v.to_string());
+                    }
+                }
+                vars
+            }
+            AnfExpr::MethodCall { receiver, args, .. } => {
+                let mut vars = Vec::new();
+                if let Some(v) = receiver.as_var() {
+                    vars.push(v.to_string());
+                }
+                for a in args {
+                    if let Some(v) = a.as_var() {
+                        vars.push(v.to_string());
+                    }
+                }
+                vars
+            }
+            AnfExpr::CallClosure { closure, args } => {
+                let mut vars = Vec::new();
+                if let Some(v) = closure.as_var() {
+                    vars.push(v.to_string());
+                }
+                for a in args {
+                    if let Some(v) = a.as_var() {
+                        vars.push(v.to_string());
+                    }
+                }
+                vars
+            }
+            AnfExpr::Atom(crate::ir::Atom::Var(v)) => vec![v.clone()],
+            AnfExpr::Unary {
+                op: crate::desugar::DesugaredUnaryOp::Perform,
+                operand,
+            } => operand
+                .as_var()
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default(),
+            AnfExpr::Binary {
+                op: crate::ast::BinaryOp::Add,
+                lhs,
+                ..
+            } => {
+                if let Some(v) = lhs.as_var()
+                    && self.is_heap_var(v)
+                {
+                    vec![v.to_string()]
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![],
+        }
     }
 
     /// Tries to apply FBIP (Functional But In-Place) optimization to a record constructor.

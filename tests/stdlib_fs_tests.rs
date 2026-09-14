@@ -336,6 +336,57 @@ fn test_stdlib_fs_jit_rename() {
 }
 
 #[test]
+fn test_stdlib_fs_jit_rename_file() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("modus_test_fs_rename_file_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let old_file = temp_dir.join("old_f.txt");
+    let new_file = temp_dir.join("new_f.txt");
+    let old_str = old_file.to_str().unwrap();
+    let new_str = new_file.to_str().unwrap();
+
+    let user_src = format!(
+        r#"
+        import {{ writeFile, readFile, renameFile, exists, IOError }} from "std:fs";
+
+        function main(): IO(i32) {{
+            perform writeFile("{old_str}", "renamed with renameFile");
+            let ren_res: Result(void, IOError) = perform renameFile("{old_str}", "{new_str}");
+            match (ren_res) {{
+                Result.Ok(_) => {{
+                    let old_ex: bool = perform exists("{old_str}");
+                    let new_ex: bool = perform exists("{new_str}");
+                    if (!old_ex && new_ex) {{
+                        let content_res: Result(String, IOError) = perform readFile("{new_str}");
+                        match (content_res) {{
+                            Result.Ok(content) => {{
+                                if (content == "renamed with renameFile") {{
+                                    IO.pure(888)
+                                }} else {{
+                                    IO.pure(0)
+                                }}
+                            }},
+                            Result.Err(e) => IO.pure(-1),
+                        }}
+                    }} else {{
+                        IO.pure(-2)
+                    }}
+                }},
+                Result.Err(e) => IO.pure(-3),
+            }}
+        }}
+    "#
+    );
+
+    let graph = ModuleGraph::build_from_source(Path::new("main.mds"), &user_src)
+        .expect("Failed to build graph");
+    let res = jit_run_graph(&graph).expect("JIT execution failed");
+    assert_eq!(res, ExecutionResult::I32(888));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
 fn test_stdlib_fs_jit_create_and_remove_dir() {
     let temp_dir = std::env::temp_dir().join(format!("modus_test_fs_dir_{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir).unwrap();

@@ -137,14 +137,14 @@ fn test_stdlib_io_jit_raw_write_and_read() {
         import {{ writeRaw, readRaw, IOError }} from "std:io";
 
         extern "C" {{
-            function malloc(size: u64): Pointer(u8);
+            function malloc(size: u64): IO(Pointer(u8));
         }}
 
         function main(): IO(i64) {{
             let write_buf: Pointer(u8) = String.toCString("PING");
             let write_res: Result(i64, IOError) = perform writeRaw({write_fd}, write_buf, 4);
 
-            let read_buf: Pointer(u8) = malloc(16);
+            let read_buf: Pointer(u8) = perform malloc(16);
             let read_res: Result(i64, IOError) = perform readRaw({read_fd}, read_buf, 4);
 
             let fallback: i64 = -1;

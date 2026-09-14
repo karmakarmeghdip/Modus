@@ -40,14 +40,19 @@ where
         .then(params.clone())
         .or(params.map(|ps| (Vec::new(), ps)));
 
+    let str_val = select! { Token::Str(s) => s };
     let block_body = block_parser().map(FunctionBody::Block);
     let expr_body = just(Token::Arrow)
         .ignore_then(expr_parser())
         .then_ignore(just(Token::Semi))
         .map(|e| FunctionBody::Expr(Box::new(e)));
-    let empty_body = just(Token::Semi).to(None);
-    let concrete_body = choice((block_body, expr_body)).map(Some);
-    let fn_body = choice((concrete_body, empty_body));
+    let empty_body = just(Token::Semi).to((None, None));
+    let alias_body = just(Token::Eq)
+        .ignore_then(str_val)
+        .then_ignore(just(Token::Semi))
+        .map(|sym| (None, Some(sym)));
+    let concrete_body = choice((block_body, expr_body)).map(|b| (Some(b), None));
+    let fn_body = choice((concrete_body, alias_body, empty_body));
 
     just(Token::Export)
         .or_not()
@@ -57,7 +62,11 @@ where
         .then(just(Token::Colon).ignore_then(type_parser()).or_not())
         .then(fn_body)
         .map_with(
-            |((((export_tok, (name, _)), (type_params, params)), return_type), body), extra| {
+            |(
+                (((export_tok, (name, _)), (type_params, params)), return_type),
+                (body, symbol_name),
+            ),
+             extra| {
                 Spanned::new(
                     FunctionDecl {
                         name,
@@ -66,6 +75,7 @@ where
                         return_type,
                         body,
                         is_exported: export_tok.is_some(),
+                        symbol_name,
                     },
                     to_ast_span(extra.span()),
                 )

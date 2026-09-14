@@ -516,50 +516,44 @@ function impure_caller(): i32 {
 }
 
 #[test]
-fn test_ffi_perform_on_pure_extern_rejected() {
+fn test_ffi_pure_extern_rejected() {
     let source = r#"
 extern "C" {
     function strlen(s: CString): u64;
-}
-
-function test(): IO(u64) {
-    let s: CString = String.toCString("test");
-    let len: u64 = perform strlen(s);
-    return IO.pure(len);
 }
 "#;
     let program = parse_program(source).expect("Parsing must succeed");
     let result = check_program(&program);
     assert!(
         result.is_err(),
-        "Calling perform on pure extern function must fail"
+        "Pure extern function must be rejected: all extern functions must return IO"
     );
     let err = result.unwrap_err();
     assert!(
-        matches!(err.kind, TypeErrorKind::PerformOnNonIO { .. }),
-        "Expected PerformOnNonIO, got: {:?}",
+        matches!(err.kind, TypeErrorKind::ExternFunctionMustReturnIO { .. }),
+        "Expected ExternFunctionMustReturnIO, got: {:?}",
         err
     );
 }
 
 #[test]
-fn test_ffi_pure_extern_in_pure_allowed() {
+fn test_ffi_pure_extern_void_rejected() {
     let source = r#"
 extern "C" {
-    function strlen(s: CString): u64;
-}
-
-function pure_len(): u64 {
-    let s: CString = String.toCString("hello");
-    return strlen(s);
+    function abort(): void;
 }
 "#;
     let program = parse_program(source).expect("Parsing must succeed");
     let result = check_program(&program);
     assert!(
-        result.is_ok(),
-        "Pure extern function in pure function must typecheck: {:?}",
-        result.err()
+        result.is_err(),
+        "Void extern function must be rejected without IO: all extern functions must return IO"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err.kind, TypeErrorKind::ExternFunctionMustReturnIO { .. }),
+        "Expected ExternFunctionMustReturnIO, got: {:?}",
+        err
     );
 }
 
@@ -665,5 +659,40 @@ function f(): f64 {
     assert!(matches!(
         res2.unwrap_err().kind,
         TypeErrorKind::InvalidCast { .. }
+    ));
+}
+
+#[test]
+fn test_extern_foreign_symbol_alias() {
+    let src = r#"
+extern "C" {
+    function c_rename(oldpath: CString, newpath: CString): IO(i32) = "rename";
+}
+
+function my_rename(old: String, new: String): IO(i32) {
+    let res: i32 = perform c_rename(String.toCString(old), String.toCString(new));
+    return IO.pure(res);
+}
+"#;
+    let prog = parse_program(src).unwrap();
+    let res = check_program(&prog);
+    assert!(
+        res.is_ok(),
+        "Expected extern symbol alias to typecheck: {:?}",
+        res.err()
+    );
+}
+
+#[test]
+fn test_normal_function_with_alias_no_body_rejected() {
+    let src = r#"
+function foo(x: i32): i32 = "c_foo";
+"#;
+    let prog = parse_program(src).unwrap();
+    let res = check_program(&prog);
+    assert!(res.is_err());
+    assert!(matches!(
+        res.unwrap_err().kind,
+        TypeErrorKind::MissingFunctionBody { .. }
     ));
 }

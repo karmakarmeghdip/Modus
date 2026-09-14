@@ -5,9 +5,9 @@ export type List(T) = Cons({ head: T, tail: List(T) }) | Nil;
 
 // 1. Transformations & Filtering
 
-function map_loop(T, U)(arr: [T], f: (T) => U, idx: i64, len: i64, b: ArrayBuilder(U)): [U] {
+function map_loop(T, U)(arr: [T], f: (T) => U, idx: i64, len: i64, b: [U]): [U] {
     if (idx >= len) {
-        return b.build();
+        return b;
     } else {
         let mapped: U = f(arr[idx]);
         return map_loop(arr, f, idx + 1, len, b.push(mapped));
@@ -16,12 +16,12 @@ function map_loop(T, U)(arr: [T], f: (T) => U, idx: i64, len: i64, b: ArrayBuild
 
 export function map(T, U)(arr: [T], f: (T) => U): [U] {
     let len: i64 = arr.length();
-    return map_loop(arr, f, 0, len, ArrayBuilder.withCapacity(len));
+    return map_loop(arr, f, 0, len, Array.withCapacity(len));
 }
 
-function filter_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64, b: ArrayBuilder(T)): [T] {
+function filter_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64, b: [T]): [T] {
     if (idx >= len) {
-        return b.build();
+        return b;
     } else {
         let item: T = arr[idx];
         if (pred(item)) {
@@ -33,7 +33,7 @@ function filter_loop(T)(arr: [T], pred: (T) => bool, idx: i64, len: i64, b: Arra
 }
 
 export function filter(T)(arr: [T], pred: (T) => bool): [T] {
-    return filter_loop(arr, pred, 0, arr.length(), ArrayBuilder.new());
+    return filter_loop(arr, pred, 0, arr.length(), Array.new());
 }
 
 // 2. Folds & Reductions
@@ -129,9 +129,9 @@ export function all(T)(arr: [T], pred: (T) => bool): bool {
 
 // 4. Slicing, Splicing & Ordering
 
-function slice_loop(T)(arr: [T], idx: i64, end_idx: i64, b: ArrayBuilder(T)): [T] {
+function slice_loop(T)(arr: [T], idx: i64, end_idx: i64, b: [T]): [T] {
     if (idx >= end_idx) {
-        return b.build();
+        return b;
     } else {
         return slice_loop(arr, idx + 1, end_idx, b.push(arr[idx]));
     }
@@ -142,10 +142,10 @@ export function slice(T)(arr: [T], start: i64, count: i64): [T] {
     let actual_start: i64 = if (start < 0) { 0 } else if (start > len) { len } else { start };
     let end_idx: i64 = if (actual_start + count > len) { len } else if (count < 0) { actual_start } else { actual_start + count };
     let actual_count: i64 = end_idx - actual_start;
-    return slice_loop(arr, actual_start, end_idx, ArrayBuilder.withCapacity(actual_count));
+    return slice_loop(arr, actual_start, end_idx, Array.withCapacity(actual_count));
 }
 
-function append_loop(T)(arr: [T], idx: i64, len: i64, b: ArrayBuilder(T)): ArrayBuilder(T) {
+function append_loop(T)(arr: [T], idx: i64, len: i64, b: [T]): [T] {
     if (idx >= len) {
         return b;
     } else {
@@ -156,15 +156,15 @@ function append_loop(T)(arr: [T], idx: i64, len: i64, b: ArrayBuilder(T)): Array
 export function concat(T)(arr1: [T], arr2: [T]): [T] {
     let len1: i64 = arr1.length();
     let len2: i64 = arr2.length();
-    let b: ArrayBuilder(T) = ArrayBuilder.withCapacity(len1 + len2);
-    let b1: ArrayBuilder(T) = append_loop(arr1, 0, len1, b);
-    let b2: ArrayBuilder(T) = append_loop(arr2, 0, len2, b1);
-    return b2.build();
+    let b: [T] = Array.withCapacity(len1 + len2);
+    let b1: [T] = append_loop(arr1, 0, len1, b);
+    let b2: [T] = append_loop(arr2, 0, len2, b1);
+    return b2;
 }
 
-function reverse_loop(T)(arr: [T], idx: i64, b: ArrayBuilder(T)): [T] {
+function reverse_loop(T)(arr: [T], idx: i64, b: [T]): [T] {
     if (idx < 0) {
-        return b.build();
+        return b;
     } else {
         return reverse_loop(arr, idx - 1, b.push(arr[idx]));
     }
@@ -175,7 +175,7 @@ export function reverse(T)(arr: [T]): [T] {
     if (len == 0) {
         return [];
     } else {
-        return reverse_loop(arr, len - 1, ArrayBuilder.withCapacity(len));
+        return reverse_loop(arr, len - 1, Array.withCapacity(len));
     }
 }
 
@@ -194,13 +194,13 @@ export function toList(T)(arr: [T]): List(T) {
     return to_list_loop(arr, arr.length() - 1, List.Nil);
 }
 
-function to_array_loop(T)(curr: List(T), b: ArrayBuilder(T)): [T] {
+function to_array_loop(T)(curr: List(T), b: [T]): [T] {
     match curr {
         List.Cons(cell) => to_array_loop(cell.tail, b.push(cell.head)),
-        List.Nil => b.build(),
+        List.Nil => b,
     }
 }
 
 export function toArray(T)(list: List(T)): [T] {
-    return to_array_loop(list, ArrayBuilder.new());
+    return to_array_loop(list, Array.new());
 }

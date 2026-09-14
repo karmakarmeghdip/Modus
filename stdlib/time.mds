@@ -11,13 +11,13 @@ export type Instant = {
 extern "C" {
     function clock_gettime(clk_id: i32, tp: Pointer(u8)): IO(i32);
     function usleep(usec: u64): IO(i32);
-    function malloc(size: u64): Pointer(u8);
+    function malloc(size: u64): IO(Pointer(u8));
     function free(ptr: Pointer(void)): IO(void);
 }
 
 /// Returns current high-precision epoch timestamp in nanoseconds.
 export function nowNanos(): IO(u64) {
-    let buf: Pointer(u8) = malloc(16);
+    let buf: Pointer(u8) = perform malloc(16);
     let res: i32 = perform clock_gettime(0, buf);
     if (res < 0) {
         perform free(buf.cast());
@@ -74,7 +74,7 @@ export function durationSub(d1: Duration, d2: Duration): Duration {
 
 /// Captures current monotonic timestamp Instant.
 export function instantNow(): IO(Instant) {
-    let buf: Pointer(u8) = malloc(16);
+    let buf: Pointer(u8) = perform malloc(16);
     let res: i32 = perform clock_gettime(1, buf);
     if (res < 0) {
         perform free(buf.cast());

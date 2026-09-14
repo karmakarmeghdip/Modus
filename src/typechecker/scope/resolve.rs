@@ -80,6 +80,9 @@ impl Environment {
                         Some(arg.span),
                     )?);
                 }
+                if (name == "ArrayBuilder" || name == "Array") && args.len() == 1 {
+                    return Ok(Type::Array(Box::new(args.into_iter().next().unwrap())));
+                }
                 Ok(Type::Named {
                     name: name.clone(),
                     args,

@@ -8,7 +8,7 @@ use inkwell::AddressSpace;
 use inkwell::FloatPredicate;
 use inkwell::IntPredicate;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicValue, BasicValueEnum};
+use inkwell::values::{BasicValue, BasicValueEnum, PointerValue};
 
 impl<'ctx> CodeGen<'ctx> {
     /// Evaluates an `Atom` to its corresponding LLVM `BasicValueEnum`.
@@ -30,12 +30,65 @@ impl<'ctx> CodeGen<'ctx> {
                     .const_int(if *b { 1 } else { 0 }, false)
                     .into()),
                 Literal::String(s) => {
-                    let str_val = self.builder.build_global_string_ptr(s, "str").unwrap();
+                    let str_val = self.get_or_create_string_literal(s);
                     Ok(str_val.as_basic_value_enum())
                 }
                 Literal::Unit => Ok(self.context.i8_type().const_int(0, false).into()),
             },
         }
+    }
+
+    /// Returns a pointer to a static immortal Modus string struct:
+    /// `{ i64 rc = -1, i64 len, i64 cap, [N+1 x i8] data }`.
+    pub(crate) fn get_or_create_string_literal(&self, s: &str) -> PointerValue<'ctx> {
+        if let Some(&ptr) = self.string_literals.borrow().get(s) {
+            return ptr;
+        }
+
+        let i64_type = self.context.i64_type();
+        let i8_type = self.context.i8_type();
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+        let array_type = i8_type.array_type((len + 1) as u32);
+
+        let rc_val = i64_type.const_int(-1i64 as u64, true);
+        let len_val = i64_type.const_int(len as u64, false);
+        let cap_val = i64_type.const_int(len as u64, false);
+
+        let mut char_vals: Vec<inkwell::values::IntValue<'ctx>> = Vec::with_capacity(len + 1);
+        for &b in bytes {
+            char_vals.push(i8_type.const_int(b as u64, false));
+        }
+        char_vals.push(i8_type.const_int(0, false));
+        let data_val = i8_type.const_array(&char_vals);
+
+        let struct_type = self.context.struct_type(
+            &[
+                i64_type.into(),
+                i64_type.into(),
+                i64_type.into(),
+                array_type.into(),
+            ],
+            false,
+        );
+
+        let const_struct = struct_type.const_named_struct(&[
+            rc_val.into(),
+            len_val.into(),
+            cap_val.into(),
+            data_val.into(),
+        ]);
+
+        let global_var =
+            self.module
+                .add_global(struct_type, Some(AddressSpace::default()), "modus_str_lit");
+        global_var.set_initializer(&const_struct);
+        global_var.set_constant(true);
+        global_var.set_linkage(inkwell::module::Linkage::Internal);
+
+        let ptr = global_var.as_pointer_value();
+        self.string_literals.borrow_mut().insert(s.to_string(), ptr);
+        ptr
     }
 
     /// Compiles a binary operation between two operands.

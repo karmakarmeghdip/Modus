@@ -33,18 +33,19 @@ This document specifies the architecture, implemented components, and forward-lo
      - Perceus reference counting (`modus_inc_ref`, `modus_dec_ref`)
      - Primitive memory layouts and headers (refcount, length, capacity for strings and arrays)
      - Core string concatenation (`modus_str_concat`) and string equality (`modus_str_eq`)
-     - Panic, abort, and bounds-check traps
-   - Domain-specific logic (filesystem operations, environment inspection, process lifecycle, networking) must **never** be hardcoded into the compiler runtime. Instead, the standard library should be written in pure Modus code that interacts with the operating system via low-level `Pointer(T)` operations and thin libc `extern "C"` declarations.
-   - **Transitional Status**: Currently, only two specialized runtime helpers (`modus_fs_read_dir` and `modus_fs_rename` in `src/backend/runtime.rs`) bridge temporary gaps while Modus's pure FFI struct layout mechanisms are being finalized. Dynamic array building is now natively supported via the `ArrayBuilder(T)` Perceus FBIP primitive, and `split` in `std:string` is implemented in 100% pure Modus (`modus_str_split` has been completely eliminated from the compiler runtime). Pure string transformations (`toLowerCase`, `toUpperCase`, `fromCharCode`) and floating-point rounding (`fround` via `(x as f32) as f64`) are also implemented 100% in pure Modus. In upcoming milestones, the remaining two filesystem helpers will be decoupled, leaving `runtime.rs` as a strictly minimal, language-agnostic kernel.
+      - Fatal panic / abort / array bounds-check handlers
+   - Domain-specific logic (filesystem operations, environment inspection, process lifecycle, networking) must **never** be hardcoded into the compiler runtime. Instead, the standard library is written in pure Modus code that interacts with the operating system via low-level `Pointer(T)` operations and thin libc `extern "C"` declarations.
+   - **Zero Domain Shims in Compiler Runtime**: `runtime.rs` contains **zero** domain-specific or OS-specific shims. `modus_fs_read_dir` has been completely eliminated from the compiler runtime and rewritten in 100% pure Modus in `stdlib/fs.mds` using `Pointer(u8).offset(19)`, `[String]`, and native `opendir`/`readdir`/`closedir` bindings. All transitional helpers are removed, leaving `runtime.rs` as a strictly minimal, language-agnostic Perceus + FBIP kernel.
 
 ---
 
 ## 2. Currently Implemented Modules & Subsystems
 
 ### 2.1 Low-Level C FFI Subsystem
-- **Direct C Interoperability**:
+- **FFI Syntax**:
   - `extern "C" { function name(...): Ret; }` and inline single-function `extern "C" function name(...): Ret;`.
-  - Purity checking distinguishes pure FFI calls (`extern "C" function strlen(s: CString): u64;`) from effectful FFI calls (`extern "C" function write(fd: i32, buf: CString, count: u64): IO(i64);`).
+  - Foreign Symbol Aliasing: `function c_name(...): Ret = "foreign_symbol";` binds directly to a foreign C symbol without colliding with Modus function names.
+  - Mandatory `IO` Return: All `extern "C"` functions must return `IO(T)` or `IO(void)` (e.g. `extern "C" function write(fd: i32, buf: Pointer(u8), count: u64): IO(i64);`). Pure functions can and must be implemented in Modus itself, never escape-hatched from foreign C libraries, preserving language soundness.
 - **Raw Memory & Pointer Primitives (`Pointer(T)`)**:
   - `Pointer.null()`: Null pointer constructor.
   - `Pointer.fromAddress(addr: u64)`: Address-to-pointer casting.
@@ -123,7 +124,7 @@ This document specifies the architecture, implemented components, and forward-lo
   - `closeFile(file: File): IO(Result(void, IOError))`: Closes file handle.
   - `removeFile(path: String): IO(Result(void, IOError))`: Unlinks file from filesystem.
   - `copyFile(src: String, dest: String): IO(Result(u64, IOError))`: Copies data in 64KB chunks and returns total bytes copied.
-  - `rename(from: String, to: String): IO(Result(void, IOError))`: Atomic rename of file or directory.
+  - `renameFile(from: String, to: String): IO(Result(void, IOError))` (and alias `rename`): Atomic rename of file or directory.
 - **Directory APIs**:
   - `createDir(path: String): IO(Result(void, IOError))`: Creates directory with standard permissions (0777).
   - `removeDir(path: String): IO(Result(void, IOError))`: Removes empty directory.
@@ -232,20 +233,25 @@ This document specifies the architecture, implemented components, and forward-lo
   - `sleep(duration: Duration): IO(void)`: Suspends execution for specified duration.
   - `sleepMillis(millis: u64): IO(void)`: Suspends execution for specified milliseconds.
 
-### 2.10 Dynamic Collection Builders & `std:collections` Module
-- **`ArrayBuilder(T)` Language Builtin**:
-  - Designed for pure-by-default collection construction with Perceus FBIP in-place mutation:
-    - `ArrayBuilder.new(): ArrayBuilder(T)`: Default capacity (8 slots).
-    - `ArrayBuilder.withCapacity(cap: i64): ArrayBuilder(T)`: Pre-allocates buffer.
-    - `builder.push(val: T): ArrayBuilder(T)`: Appends value, returning updated builder. When uniquely referenced (`rc == 1`), modifies the buffer in-place without reallocation.
-    - `builder.len(): i64`: Current element count.
-    - `builder.capacity(): i64`: Current capacity.
-    - `builder.build(): [T]`: Seals builder into immutable Perceus array `[T]`. Zero-copy when uniquely owned (`rc == 1`), otherwise CoW-copied with reference count increments on heap elements.
+### 2.10 Unified `[T]` Dynamic Array Primitive & `std:collections` Module
+- **Universal `[T]` Primitive Array & FBIP Semantics**:
+  - In Modus, `[T]` is the universal growable dynamic collection primitive, uniformly managed by Perceus reference counting with Functional-But-In-Place (FBIP) mechanics. `ArrayBuilder(T)` is an alias for `[T]`.
+  - **Constructors**:
+    - `Array.new(): [T]` (alias `ArrayBuilder.new()`): Creates an empty array with initial capacity (4 slots).
+    - `Array.withCapacity(cap: i64): [T]` (alias `ArrayBuilder.withCapacity(cap)`): Pre-allocates buffer for at least `cap` elements.
+  - **FBIP Primitive Methods on `[T]`**:
+    - `arr.push(val: T): [T]`: Appends element. If uniquely referenced (`rc == 1`), in-place mutation without reallocation (doubling capacity when full). If shared (`rc > 1`), copy-on-write clone.
+    - `arr.set(index: i64, val: T): [T]`: Purely functional indexed update. If uniquely referenced (`rc == 1`), modifies in-place and drops replaced heap element. If shared (`rc > 1`), copy-on-write clone.
+    - `arr.pop(): [T]`: Purely functional pop. Returns updated array with `length - 1`. If uniquely referenced (`rc == 1`), decrements length in-place and drops popped heap element. If shared (`rc > 1`), copy-on-write clone.
+    - `arr.length(): i64`: Current element count.
+    - `arr.capacity(): i64`: Allocated capacity.
+    - `arr.isEmpty(): bool`: Returns `true` if `length == 0`.
+    - `arr.build(): [T]`: Identity / zero-cost operation on `[T]`.
 - **Import Path**: `import { ... } from "std:collections";`
 - **`List(T)` Functional Singly-Linked List**:
-  - `type List(T) = Cons(T, List(T)) | Nil;`
-  - `listFrom(arr: [T]): List(T)`: Converts array to immutable linked list.
-  - `listToArray(list: List(T)): [T]`: Converts linked list to array via `ArrayBuilder(T)`.
+  - `type List(T) = Cons({ head: T, tail: List(T) }) | Nil;`
+  - `toList(arr: [T]): List(T)`: Converts array to immutable linked list.
+  - `toArray(list: List(T)): [T]`: Converts linked list to array via `[T]`.
 - **Higher-Order Array Utilities**:
   - `map(arr: [T], f: (T) => U): [U]`: Applies transformer to each element.
   - `filter(arr: [T], pred: (T) => bool): [T]`: Retains elements satisfying predicate.
@@ -317,42 +323,46 @@ Modus follows this exact model. The compiler runtime (`src/backend/runtime.rs`) 
   - Primitive string operations (`modus_str_concat`, `modus_str_eq`).
   - Fatal panic / abort / array bounds-check handlers.
 - **What must be stripped out of the compiler**:
-  - `modus_fs_read_dir`, `modus_fs_rename`, and any future domain helpers.
+  - `modus_fs_read_dir` and any future domain helpers.
   - POSIX directory handling, file descriptors, environment inspection, network sockets, process spawning.
 
-#### 9. Current Status & Transitional Helpers
-Following the completion of dynamic collection builders and pure Modus string splitting, only **two** transitional helpers remain in `src/backend/runtime.rs`:
-- `modus_fs_read_dir`: Implemented in LLVM IR because:
-  1. Reading POSIX directories requires unpacking C's `struct dirent`, whose internal field offsets (e.g. `d_name`) vary across operating systems.
-  2. Modus struct offsetting for foreign C records is pending implementation.
-- `modus_fs_rename`: Implemented as a temporary runtime shim to wrap libc `rename`.
+#### 9. Current Status: Zero Transitional Helpers
+Following the completion of universal `[T]` dynamic arrays, pure Modus directory reading, pure Modus string splitting, and foreign symbol aliasing, **zero** transitional helpers remain in `src/backend/runtime.rs`:
+- All filesystem logic (including `readDir`, `rename`, `copyFile`) is 100% pure Modus.
+- `modus_fs_read_dir` has been **completely eliminated** from `runtime.rs`.
 
 > [!NOTE]
-> - `modus_str_split` has been **completely eliminated** from the compiler runtime. In `stdlib/string.mds`, `split` is implemented in 100% pure Modus using `ArrayBuilder(String)` with zero runtime overhead.
+> - `modus_fs_read_dir` has been **completely eliminated** from the compiler runtime. In `stdlib/fs.mds`, `readDir` is implemented in 100% pure Modus using `Pointer(u8).offset(19)`, `[String]`, and native `opendir`/`readdir`/`closedir` bindings.
+> - `modus_fs_rename` has been **completely eliminated** from the compiler runtime. In `stdlib/fs.mds`, `renameFile` / `rename` binds directly to libc `rename` via native FFI foreign symbol aliasing (`function c_rename(...): IO(i32) = "rename";`).
+> - `modus_str_split` has been **completely eliminated** from the compiler runtime. In `stdlib/string.mds`, `split` is implemented in 100% pure Modus using `[String]` with zero runtime overhead.
 > - String transformations `toLowerCase`, `toUpperCase`, and character generator `fromCharCode` are implemented in 100% pure Modus using tail-recursive loops with zero runtime additions.
 > - Floating-point rounding `fround` is implemented in 100% pure Modus via native `(x as f32) as f64`. The `modus_fround` helper has been completely eliminated from the compiler runtime.
 
 #### 10. Decoupling Prerequisites
-To strip the remaining two helpers and move all standard library code to pure Modus:
-1. **Platform-Specific C Struct / Pointer Offsetting in Pure Modus**:
-   - Defining C-struct layouts or using pointer offset primitives: `dirent_ptr.offset(NAME_OFFSET).read()`.
-   - Cross-platform target constants (e.g. Linux vs macOS vs Windows struct offsets).
-2. **Dynamic Collection Builders (`ArrayBuilder(T)`) [COMPLETED]**:
-   - Pure-by-default collection builder with Perceus FBIP in-place mutation and zero-copy `.build()`, fully integrated into typechecker, desugaring, ANF/IR, and LLVM backend.
+All decoupling prerequisites are now met:
+1. **Platform-Specific C Struct / Pointer Offsetting in Pure Modus [COMPLETED]**:
+   - Defining C-struct layouts or using pointer offset primitives: `dirent_ptr.offset(19)`.
+2. **Universal Dynamic Collections (`[T]` / `Array`) [COMPLETED]**:
+   - Universal `[T]` primitive type with Perceus FBIP in-place mutation and zero-copy `.build()`, fully integrated into typechecker, desugaring, ANF/IR, and LLVM backend.
 3. **Explicit Type Casting / Numeric Conversion Syntax [COMPLETED]**:
-   - Language syntax `expr as Type` implemented across AST, parser, typechecker, ANF/IR, and LLVM backend, enabling integer widening/narrowing, float truncation/extension, int-float conversions, and pointer-integer conversions.
-4. **Pure Modus libc / POSIX Declarations**:
-   - Moving all `opendir`, `readdir`, `closedir`, `rename`, `stat`, and other POSIX declarations into `stdlib/` Modus files without compiler backend involvement.
+   - Language syntax `expr as Type` implemented across AST, parser, typechecker, ANF/IR, and LLVM backend.
+4. **Foreign Symbol Aliasing in `extern "C"` [COMPLETED]**:
+   - Foreign symbol aliasing (`function c_fn(...): IO(T) = "foreign_sym";`) directly binds libc functions without name clashing or runtime shims.
+5. **Pure Modus libc / POSIX Declarations [COMPLETED]**:
+   - All `opendir`, `readdir`, `closedir`, `stat`, and other POSIX declarations reside in `stdlib/` Modus files without compiler backend involvement.
 
 #### 11. Decoupling Milestones
-- **Milestone 4.1: Pure Modus POSIX Re-implementation (Next Priority)**:
-  - Rewrite `readDir` and `rename` in `stdlib/fs.mds` using pure Modus pointer operations, `ArrayBuilder(String)`, and libc calls once struct offsetting is available.
-  - Remove `modus_fs_read_dir` and `modus_fs_rename` from `src/backend/runtime.rs`.
-- **Milestone 4.2: Pure Modus Dynamic Array Splitting [COMPLETED]**:
-  - Replaced `modus_str_split` with pure Modus `split` in `stdlib/string.mds` leveraging `ArrayBuilder(String)`.
-  - Removed `modus_str_split` entirely from `src/backend/runtime.rs`.
-- **Milestone 4.3: Strip `src/backend/runtime.rs` to Minimal Kernel**:
-  - Audit compiler runtime exports to verify zero OS-specific or domain-specific symbols remain.
+- **Milestone 4.1: Pure Modus POSIX Re-implementation [COMPLETED]**:
+  - Rewrote `readDir` in `stdlib/fs.mds` using pure Modus pointer operations, `[String]`, and libc calls.
+  - Removed `modus_fs_read_dir` from `src/backend/runtime.rs`.
+- **Milestone 4.2: Pure Modus Dynamic Array Splitting & Direct Libc Rename [COMPLETED]**:
+  - Replaced `modus_str_split` with pure Modus `split` in `stdlib/string.mds` leveraging `[String]`.
+  - Replaced `modus_fs_rename` with direct libc `rename` via foreign symbol aliasing.
+  - Removed `modus_str_split`, `modus_fs_rename`, `puts_fn`, and `printf_fn` from `src/backend/runtime.rs`.
+- **Milestone 4.3: Strip `src/backend/runtime.rs` to Minimal Kernel [COMPLETED]**:
+  - Audited compiler runtime exports to verify zero OS-specific or domain-specific symbols remain.
+  - Purged `strcmp_fn`, `fs_read_dir_fn`, and legacy `array_builder_*` wrappers.
+  - `runtime.rs` is now strictly restricted to foundational primitives: Perceus memory management, universal `[T]` array FBIP primitives, and core string operators.
   - Support a minimal, dependency-free runtime suitable for bare-metal / embedded targets (`no_std`).
 - **Milestone 4.4: Standalone `modus-std` Packaging**:
   - Decouple `stdlib/*.mds` into an independent package (`modus-std`) with its own versioning, tests, and build pipeline.

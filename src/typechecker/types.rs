@@ -116,18 +116,17 @@ impl Type {
     }
 
     pub fn array_builder(inner: Type) -> Self {
-        Type::Named {
-            name: "ArrayBuilder".to_string(),
-            args: vec![inner],
-        }
+        Type::Array(Box::new(inner))
     }
 
     pub fn is_array_builder(&self) -> bool {
-        matches!(self, Type::Named { name, args } if name == "ArrayBuilder" && args.len() == 1)
+        matches!(self, Type::Array(_))
+            || matches!(self, Type::Named { name, args } if name == "ArrayBuilder" && args.len() == 1)
     }
 
     pub fn unwrap_array_builder(&self) -> Option<&Type> {
         match self {
+            Type::Array(inner) => Some(inner),
             Type::Named { name, args } if name == "ArrayBuilder" && args.len() == 1 => {
                 Some(&args[0])
             }

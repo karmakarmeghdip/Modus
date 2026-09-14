@@ -42,6 +42,8 @@ pub struct CodeGen<'ctx> {
     pub(crate) record_field_indices: HashMap<String, BTreeMap<String, u32>>,
     pub(crate) type_field_indices: HashMap<String, BTreeMap<String, u32>>,
     pub(crate) union_variants: HashMap<String, u64>,
+    pub(crate) string_literals:
+        std::cell::RefCell<HashMap<String, inkwell::values::PointerValue<'ctx>>>,
     pub is_lib_entry: bool,
 }
 
@@ -83,6 +85,7 @@ impl<'ctx> CodeGen<'ctx> {
             record_field_indices: HashMap::new(),
             type_field_indices: HashMap::new(),
             union_variants,
+            string_literals: std::cell::RefCell::new(HashMap::new()),
             is_lib_entry: false,
         }
     }

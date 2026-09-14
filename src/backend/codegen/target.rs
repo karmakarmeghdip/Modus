@@ -12,6 +12,7 @@ pub enum ExecutionResult {
     I32(i32),
     F64(f64),
     Bool(bool),
+    String(String),
     Void,
 }
 
@@ -151,6 +152,21 @@ impl<'ctx> CodeGen<'ctx> {
                         .get_function::<unsafe extern "C" fn() -> bool>("main")
                         .map_err(|e| e.to_string())?;
                     Ok(ExecutionResult::Bool(f.call()))
+                }
+                Type::Primitive(crate::ast::PrimitiveType::String) => {
+                    let f = ee
+                        .get_function::<unsafe extern "C" fn() -> *const u8>("main")
+                        .map_err(|e| e.to_string())?;
+                    let ptr = f.call();
+                    if ptr.is_null() {
+                        Ok(ExecutionResult::String(String::new()))
+                    } else {
+                        let len = *(ptr.add(8) as *const i64);
+                        let data_ptr = ptr.add(24);
+                        let slice = std::slice::from_raw_parts(data_ptr, len as usize);
+                        let s = std::str::from_utf8(slice).map_err(|e| e.to_string())?;
+                        Ok(ExecutionResult::String(s.to_string()))
+                    }
                 }
                 Type::Primitive(crate::ast::PrimitiveType::Void) | Type::Unit => {
                     let f = ee

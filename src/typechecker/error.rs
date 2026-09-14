@@ -68,6 +68,11 @@ pub enum TypeErrorKind {
     UnexpectedFunctionBodyInHeader { function_name: String },
     /// Invalid type cast
     InvalidCast { from: String, to: String },
+    /// Extern "C" functions must always return an IO type (e.g. IO(T) or IO(void))
+    ExternFunctionMustReturnIO {
+        function_name: String,
+        found: String,
+    },
     /// General semantic error
     General(String),
 }
@@ -184,6 +189,15 @@ impl fmt::Display for TypeErrorKind {
             }
             Self::InvalidCast { from, to } => {
                 write!(f, "Invalid cast from '{from}' to '{to}'")
+            }
+            Self::ExternFunctionMustReturnIO {
+                function_name,
+                found,
+            } => {
+                write!(
+                    f,
+                    "Extern 'C' function '{function_name}' must return an IO type (e.g. IO(T) or IO(void)) to preserve language soundness, found '{found}'"
+                )
             }
             Self::General(msg) => {
                 write!(f, "{msg}")
