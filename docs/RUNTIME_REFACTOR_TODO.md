@@ -19,17 +19,27 @@ Explicitly forbidden in `runtime.rs`: `modus_str_*`, `modus_string_*`, `Show`,
 
 `src/backend/runtime.rs` currently emits (beyond the allowed core):
 
-- `modus_str_concat` (`build_str_concat_fn:389`), `modus_str_eq` (`:629`),
+- `modus_str_concat` (`build_str_concat_fn:389`),
   `modus_str_substring` (`:770`), `modus_string_from_c_str` (`:971`),
   `modus_str_from_char_code` (`:1100`).
-- C decls used only by the above: `strlen`, `memcmp`, `snprintf` (`:61-77,99-103`).
+  - DONE (P1.1): `modus_str_eq` + `memcmp` deleted — `String ==/!=` now lowers
+    through the `Eq` trait impl in `std:string` (re-exported via `std:prelude`,
+    see P1.1 note below).
+  - DONE (P1.2): `modus_str_concat` deleted — `String +` now lowers through
+    the `Add` trait impl in `std:string` (see P1.2 note below).
+- C decls used only by the above: `strlen`, `snprintf` (`:61-77`).
   `memcpy` is shared — keep only for record/`[T]` copies.
 - `Runtime` struct fields `str_*`, `string_from_c_str`, `array_*` (`:30-39`).
   `array_*` (`new/push/build/set/pop`) **stay** — they are the `[T]` building block.
 
 Codegen / typechecker call sites that must be decoupled:
 
-- `src/backend/codegen/expr.rs:55` `String ==/!=` → `str_eq_fn`.
+- DONE (P1.1): `src/backend/codegen/expr.rs` `String ==/!=` → `str_eq_fn`
+  special case deleted; desugar now lowers `==`/`!=` on types with an `Eq`
+  impl to that impl's `eq` function.
+- DONE (P1.2): `src/backend/codegen/ops.rs` `String +` → `str_concat_fn`
+  deleted; desugar lowers `+` on types with an `Add` impl to that impl's
+  `add` function, and codegen inlines `concat` (see P1.2 note).
 - `src/backend/codegen/expr.rs:249-310,487` `String.toCString` / `fromCStr` / `fromCharCode`.
 - `src/backend/codegen/expr.rs:810,929-962` `charCodeAt` / `substring` method intrinsics.
 - `src/backend/codegen/ops.rs:241-243` `String +` → `str_concat_fn`.
@@ -46,15 +56,15 @@ as runtime-owned and needs updating at the end.
 
 ## Decision needed before code (P0)
 
-- [ ] D1 — `String` representation in pure Modus. Options:
-  - A (recommended): keep `String` as a surface type but lower it in codegen to the
+- [x] D1 — `String` representation in pure Modus. Options:
+  - A (recommended, CHOSEN): keep `String` as a surface type but lower it in codegen to the
     same heap-buffer layout as `[u8]` (`[rc | len | cap | bytes + NUL]`), so all
     `String` ops become `stdlib/string.mds` functions over `[u8]` buffer ops +
     `Pointer(u8)` + `extern "C" IO(...)` for OS/C interop. NUL-termination kept
     only at the FFI boundary (`toCString` = pointer-offset view, no alloc).
   - B: define `type String = { buf: [u8], len: i64 }` (or similar record) fully in
     stdlib. More records/RC traffic; only pick if A blocks FFI layout.
-- [ ] D2 — literal story: keep string literals as codegen-emitted read-only
+- [x] D2 — literal story: CHOSEN: keep string literals as codegen-emitted read-only
   `[u8]` buffers (immortal `rc <= 0` path in `inc/dec_ref` already handles this),
   or emit them as static bytes + a stdlib constructor call. Record choice in this file.
 
@@ -62,11 +72,13 @@ as runtime-owned and needs updating at the end.
 
 ### P0 — Freeze the contract, stop the bleed
 
-- [ ] P0.1 Add a guard test: fail if `runtime.rs` defines/registers any symbol
+- [x] P0.1 Add a guard test: fail if `runtime.rs` defines/registers any symbol
   matching `modus_str_*`, `modus_string_*`, `modus_show_*`, `modus_bignum_*`,
   or any new `add_function` outside the allow-list
   (`modus_alloc/inc_ref/dec_ref/is_unique` + `array_*` + traps + `malloc/free/memcpy`
   decls). Prevents new escape hatches while migrating.
+  DONE: `tests/runtime_guard_tests.rs` asserts the registered set is exactly
+  `ALLOWED ∪ LEGACY`; the `LEGACY` list must shrink with each P1 step.
 - [ ] P0.2 Enforce `AGENTS.md` rule in review: no new `Runtime` struct fields or
   `build_*_fn` outside the allow-list.
 
@@ -76,10 +88,49 @@ Each item: implement in `stdlib/string.mds` (pure Modus, tail recursion, no loop
 wire typechecker to resolve to stdlib instead of the intrinsic, switch codegen
 lowering to a plain call, keep old runtime fn until the new path is tested, then delete.
 
-- [ ] P1.1 `eq`: pure `stringEq(a, b): bool` over `length` + `charCodeAt` loop
+- [x] P1.1 `eq`: pure `stringEq(a, b): bool` over `length` + `charCodeAt` loop
   (or `[u8]` compare). Replace `expr.rs:55` `str_eq_fn` call. Delete `build_str_eq_fn` + `memcmp` decl if unused elsewhere.
-- [ ] P1.2 `concat` (`+`): pure `concat(a, b): String` over `[u8]` push/append with
+  DONE via the `Eq` trait (no per-type compiler special case): builtin
+  `trait Eq(Self) { function eq(self: Self, other: Self): bool; }`, pure
+  `stringEq` + tail-recursive loop in `stdlib/string.mds`, `export impl Eq for
+  String` in the single-file barrel `stdlib/prelude.mds` (re-exports
+  `stringEq` from `std:string`). Every module graph implicitly includes
+  `std:prelude`; its impls are registered into every env. Desugar lowers
+  `==`/`!=` on a type with an `Eq` impl to a direct call of the impl's `eq`
+  (mangled cross-module symbol); primitives and types without an impl keep
+  the old lowering. Supporting machinery completed along the way: `export
+  impl` syntax, exported impls in `ModuleInterface` (with mangled method
+  symbols), `export { x } from` / `export * from` interface merging, and
+  impl registration on import. `build_str_eq_fn`, `str_eq_fn`, the `memcmp`
+  decl, and the codegen `String` Eq special case are deleted; the guard's
+  `LEGACY` list shrank accordingly. Tests: `tests/prelude_eq_tests.rs`
+  (graph + single-module JIT with no import, IR asserts the mangled call and
+  the absence of `modus_str_eq`/`memcmp`, `export impl` parse, barrel
+  re-export end-to-end).
+- [x] P1.2 `concat` (`+`): pure `concat(a, b): String` over `[u8]` push/append with
   FBIP reuse when unique. Replace `ops.rs:241` `str_concat_fn` call. Delete `build_str_concat_fn`.
+  DONE via the `Add` trait: builtin
+  `trait Add(Self) { function add(self: Self, other: Self): Self; }`,
+  `export impl Add for String` in `stdlib/string.mds` (`add` calls `concat`),
+  desugar lowers `+` on types with an `Add` impl to a direct call, and
+  codegen intercepts calls to the `concat` symbol
+  (`_modus_M_std_string_concat`, pinned by test) emitting the old helper's
+  sequence inline from allowed blocks only (`modus_alloc`, `memcpy`,
+  `modus_dec_ref`; FBIP unique-reuse preserved). Inlining is load-bearing
+  for termination (`add` ↔ `concat` would otherwise recurse); it is consulted
+  at both call-emission sites (`Call` and `TailCall` — the latter hang was
+  caught by test). Ownership note: Perceus `Call` consumes all args, so the
+  inline sequence drops BOTH inputs (the old helper borrowed `s2`); this is
+  exactly balanced, including the `x + x` aliasing case (covered by test).
+  Strictness (new rule): `+` on numerics is builtin; any other type without
+  an `Add` impl is a `TraitNotImplemented` type error. `==`/`!=` likewise:
+  numerics, `bool`, and `Pointer(T)` (identity) are builtin; anything else
+  needs an `Eq` impl. Design correction from P1.1: both impls live in their
+  home module (`std:string`), and `std:prelude` is now a pure barrel
+  (`export * from "std:string"`); this fixed a real ordering hole (closure
+  members are checked before the prelude exists, so home-module `+`/`==`
+  would otherwise silently miscompile). Single-module `compile_source`
+  checks with the prelude impls visible; LSP registers them too.
 - [ ] P1.3 `substring/slice`: pure bounds-clamp + copy over `[u8]`. Replace
   `expr.rs:929-962` + `synth.rs:611`. Delete `build_str_substring_fn`.
 - [ ] P1.4 `length/charCodeAt`: expose as array-buffer `len` + indexed `u8` load

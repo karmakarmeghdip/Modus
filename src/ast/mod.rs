@@ -101,7 +101,7 @@ impl Declaration {
             Declaration::Function(f) => f.is_exported,
             Declaration::Type(t) => t.is_exported,
             Declaration::Trait(tr) => tr.is_exported,
-            Declaration::Impl(_) => false,
+            Declaration::Impl(im) => im.is_exported,
             Declaration::Extern(ext) => ext.functions.iter().any(|f| f.node.is_exported),
         }
     }
@@ -176,6 +176,7 @@ pub struct ImplDecl {
     pub trait_name: String,
     pub target_type: Spanned<Type>,
     pub methods: Vec<Spanned<FunctionDecl>>,
+    pub is_exported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

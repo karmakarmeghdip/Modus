@@ -55,6 +55,7 @@ fn test_stdlib_string_source_parses_and_typechecks() {
     assert!(env.lookup_function("parseIntRadix").is_some());
     assert!(env.lookup_function("parseFloat").is_some());
     assert!(env.lookup_function("fromCharCode").is_some());
+    assert!(env.lookup_function("stringEq").is_some());
 }
 
 #[test]
@@ -71,7 +72,8 @@ fn test_stdlib_string_graph_construction() {
 
     let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
         .expect("Failed to build module graph with std:string");
-    assert_eq!(graph.modules.len(), 2);
+    // main + std:string + implicit std:prelude
+    assert_eq!(graph.modules.len(), 3);
     assert!(
         graph
             .modules

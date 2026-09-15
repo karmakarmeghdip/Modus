@@ -753,11 +753,17 @@ impl<'a> TypeInferrer<'a> {
                         lhs_ty
                     };
                     if *op == BinaryOp::Add {
-                        if !op_ty.is_numeric() && op_ty != Type::string() {
+                        // Numerics use builtin arithmetic; every other type
+                        // must provide an `Add` impl (e.g. `String` via the
+                        // prelude) — desugar lowers through it.
+                        if !op_ty.is_numeric()
+                            && !crate::typechecker::traits::TraitResolver::new(self.env)
+                                .implements_trait(&op_ty, "Add")
+                        {
                             return Err(TypeError::new(
-                                TypeErrorKind::TypeMismatch {
-                                    expected: "numeric or String type".to_string(),
-                                    found: op_ty.to_string(),
+                                TypeErrorKind::TraitNotImplemented {
+                                    ty: op_ty.to_string(),
+                                    trait_name: "Add".to_string(),
                                 },
                                 Some(lhs.span),
                             ));
@@ -782,12 +788,32 @@ impl<'a> TypeInferrer<'a> {
                         &rhs.node,
                         Expr::Literal(Literal::Int(_) | Literal::UInt(_) | Literal::Float(_))
                     );
-                    if lhs_is_lit && !rhs_is_lit {
+                    // Numerics, bools, and pointers compare builtin
+                    // (identity for pointers); every other type must provide
+                    // an `Eq` impl (e.g. `String` via the prelude) — desugar
+                    // lowers through it.
+                    let op_ty = if lhs_is_lit && !rhs_is_lit {
                         let rhs_ty = self.synth_expr(rhs)?;
                         self.check_expr(lhs, &rhs_ty)?;
+                        rhs_ty
                     } else {
                         let lhs_ty = self.synth_expr(lhs)?;
                         self.check_expr(rhs, &lhs_ty)?;
+                        lhs_ty
+                    };
+                    if !op_ty.is_numeric()
+                        && op_ty != Type::bool()
+                        && !op_ty.is_pointer()
+                        && !crate::typechecker::traits::TraitResolver::new(self.env)
+                            .implements_trait(&op_ty, "Eq")
+                    {
+                        return Err(TypeError::new(
+                            TypeErrorKind::TraitNotImplemented {
+                                ty: op_ty.to_string(),
+                                trait_name: "Eq".to_string(),
+                            },
+                            Some(lhs.span),
+                        ));
                     }
                     Type::bool()
                 }

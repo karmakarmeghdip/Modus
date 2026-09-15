@@ -253,6 +253,101 @@ impl Environment {
             },
         );
 
+        // Register built-in Eq trait:
+        // trait Eq(Self) { function eq(self: Self, other: Self): bool; }
+        //
+        // `==`/`!=` on a type with an `Eq` impl lower to that impl (see
+        // desugar). The impl for `String` lives in the std:prelude module.
+        let mut eq_methods = HashMap::new();
+        eq_methods.insert(
+            "eq".to_string(),
+            FunctionSig {
+                name: "eq".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+                params: vec![
+                    ("self".to_string(), Type::GenericParam("Self".to_string())),
+                    ("other".to_string(), Type::GenericParam("Self".to_string())),
+                ],
+                return_type: Type::bool(),
+                is_effectful: false,
+                span: Span::default(),
+                symbol_name: None,
+                is_c_abi: false,
+            },
+        );
+        self.traits.insert(
+            "Eq".to_string(),
+            TraitDef {
+                name: "Eq".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+                methods: eq_methods,
+            },
+        );
+        self.types.insert(
+            "Eq".to_string(),
+            TypeDefInfo::Builtin {
+                name: "Eq".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+            },
+        );
+
+        // Register built-in Add trait:
+        // trait Add(Self) { function add(self: Self, other: Self): Self; }
+        //
+        // `+` on a type with an `Add` impl lowers to that impl (see desugar).
+        // The impl for `String` lives in `std:string` (re-exported through the
+        // `std:prelude` barrel); numerics keep the builtin arithmetic lowering.
+        let mut add_methods = HashMap::new();
+        add_methods.insert(
+            "add".to_string(),
+            FunctionSig {
+                name: "add".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+                params: vec![
+                    ("self".to_string(), Type::GenericParam("Self".to_string())),
+                    ("other".to_string(), Type::GenericParam("Self".to_string())),
+                ],
+                return_type: Type::GenericParam("Self".to_string()),
+                is_effectful: false,
+                span: Span::default(),
+                symbol_name: None,
+                is_c_abi: false,
+            },
+        );
+        self.traits.insert(
+            "Add".to_string(),
+            TraitDef {
+                name: "Add".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+                methods: add_methods,
+            },
+        );
+        self.types.insert(
+            "Add".to_string(),
+            TypeDefInfo::Builtin {
+                name: "Add".to_string(),
+                type_params: vec![ast::TypeParam {
+                    name: "Self".to_string(),
+                    bound: None,
+                }],
+            },
+        );
+
         // Register built-in Show implementations for all primitive types
         let show_primitives = [
             Type::i8(),

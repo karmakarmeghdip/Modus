@@ -103,6 +103,20 @@ impl<'a> TypeInferrer<'a> {
                 )) && (expected.is_numeric()
                     || (expected == Type::string() && *op == BinaryOp::Add)) =>
             {
+                // Strictness: non-numeric `+` requires an `Add` impl (this
+                // guard only selected the branch; the impl check decides).
+                if *op == BinaryOp::Add
+                    && !expected.is_numeric()
+                    && !TraitResolver::new(self.env).implements_trait(&expected, "Add")
+                {
+                    return Err(TypeError::new(
+                        TypeErrorKind::TraitNotImplemented {
+                            ty: expected.to_string(),
+                            trait_name: "Add".to_string(),
+                        },
+                        Some(expr.span),
+                    ));
+                }
                 self.check_expr(lhs, &expected)?;
                 self.check_expr(rhs, &expected)?;
                 Ok(expected.clone())

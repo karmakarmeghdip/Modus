@@ -23,6 +23,12 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             AnfTail::TailCall { callee, args } => {
+                // `std:string.concat` in tail position: inline it, then
+                // return the result (see `try_build_string_concat_call`).
+                if let Some(res) = self.try_build_string_concat_call(callee, args) {
+                    let val = res?;
+                    return self.build_typed_return(Some(val));
+                }
                 if let Atom::Var(name) = callee {
                     if let Some(&tag) = self.union_variants.get(name) {
                         let val = self.build_variant_constructor(tag, args)?;

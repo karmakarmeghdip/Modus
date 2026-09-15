@@ -3,15 +3,20 @@ use modus::modules::{
     ModuleGraph, ModuleId, ResolveError, build_executable, jit_run_graph, resolve_module_path,
     stdlib::{STD_FS_SOURCE, is_std_module},
 };
-use modus::parser::parse_program;
-use modus::typechecker::check_program;
 use std::path::{Path, PathBuf};
 
 #[test]
 fn test_stdlib_fs_source_parses_and_typechecks() {
     assert!(is_std_module("std:fs"));
-    let prog = parse_program(STD_FS_SOURCE).expect("Failed to parse std:fs source");
-    let env = check_program(&prog).expect("Failed to typecheck std:fs source");
+    // Checked through the module graph: std:fs uses `==` on `String`, whose
+    // `Eq` impl comes from the prelude (unavailable to bare `check_program`).
+    let graph = ModuleGraph::build_from_source(Path::new("std:fs"), STD_FS_SOURCE)
+        .expect("Failed to build std:fs graph");
+    let (_, envs) = modus::modules::check_module_graph_with_envs(&graph)
+        .expect("Failed to typecheck std:fs source");
+    let env = envs
+        .get(&ModuleId::new(PathBuf::from("std:fs")))
+        .expect("std:fs env");
 
     // Verify key types exist
     assert!(env.types.contains_key("IOError"));
@@ -66,16 +71,23 @@ fn test_stdlib_fs_graph_construction() {
     let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
         .expect("Failed to build graph with std:fs");
 
-    assert_eq!(graph.modules.len(), 2);
+    // main + std:fs + implicit std:prelude + std:string
+    assert_eq!(graph.modules.len(), 4);
     let std_id = ModuleId::new(PathBuf::from("std:fs"));
     let main_id = ModuleId::new(PathBuf::from("main.mds"));
+    let prelude_id = ModuleId::new(PathBuf::from("std:prelude"));
+    let string_id = ModuleId::new(PathBuf::from("std:string"));
 
     assert!(graph.modules.contains_key(&std_id));
     assert!(graph.modules.contains_key(&main_id));
+    assert!(graph.modules.contains_key(&prelude_id));
+    assert!(graph.modules.contains_key(&string_id));
 
-    // std:fs must come first in topological order
-    assert_eq!(graph.topo_order[0], std_id);
-    assert_eq!(graph.topo_order[1], main_id);
+    // Dependencies must precede main in topological order
+    let pos = |id: &ModuleId| graph.topo_order.iter().position(|m| m == id).unwrap();
+    assert!(pos(&std_id) < pos(&main_id));
+    assert!(pos(&string_id) < pos(&prelude_id));
+    assert!(pos(&prelude_id) < pos(&main_id));
 
     let res = jit_run_graph(&graph).expect("JIT execution failed");
     assert_eq!(res, ExecutionResult::Bool(false));

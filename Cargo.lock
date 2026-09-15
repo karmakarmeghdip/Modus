@@ -406,7 +406,8 @@ dependencies = [
 [[package]]
 name = "inkwell"
 version = "0.10.0"
-source = "git+https://github.com/TheDan64/inkwell?branch=master#f9a523bc7656350fca7b53ddaadc14c4b7ee75ae"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30932a1258d02e3c7344618abcdbb5dca03e0f8d2ad34496067d1f371cfceda6"
 dependencies = [
  "bitflags 2.13.2",
  "inkwell_internals",
@@ -418,7 +419,8 @@ dependencies = [
 [[package]]
 name = "inkwell_internals"
 version = "0.15.0"
-source = "git+https://github.com/TheDan64/inkwell?branch=master#f9a523bc7656350fca7b53ddaadc14c4b7ee75ae"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04a85f1cf8de4f1df2ebd93b6afe957fa2acd0081c97dabfa41651eeeb44756e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -451,9 +453,9 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llvm-sys"
-version = "231.0.0"
+version = "221.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0475bc87fdfb41f07d459d26d01534dbf24f51260dc8a38b661988e5e6b3432"
+checksum = "2e52e36cd9eef0d5c4ba35c751c252f207642293009bb774185f84f678c7683c"
 dependencies = [
  "anyhow",
  "cc",

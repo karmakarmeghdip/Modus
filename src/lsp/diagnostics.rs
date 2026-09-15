@@ -11,7 +11,7 @@ use crate::modules::resolver::ResolveError;
 use crate::modules::stdlib::is_std_module;
 use crate::parser::parse_program;
 use crate::typechecker::{Environment, check_program_with_env};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Range, Url};
@@ -86,6 +86,7 @@ static STD_IO_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::n
 static STD_FS_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
 static STD_ENV_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
 static STD_PROCESS_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
+static STD_PRELUDE_INTERFACE: OnceLock<Result<ModuleInterface, String>> = OnceLock::new();
 
 /// Computes or retrieves the static ModuleInterface for `std:io`.
 pub fn get_std_io_interface() -> Result<ModuleInterface, String> {
@@ -96,8 +97,14 @@ pub fn get_std_io_interface() -> Result<ModuleInterface, String> {
             let mut env = Environment::new();
             check_program_with_env(&prog, &mut env)
                 .map_err(|e| format!("Failed to typecheck std:io: {e:?}"))?;
-            ModuleInterface::extract(ModuleId::new(PathBuf::from("std:io")), &prog, &env, None)
-                .map_err(|e| format!("Failed to extract std:io interface: {e:?}"))
+            ModuleInterface::extract(
+                ModuleId::new(PathBuf::from("std:io")),
+                &prog,
+                &env,
+                None,
+                &HashMap::new(),
+            )
+            .map_err(|e| format!("Failed to extract std:io interface: {e:?}"))
         })
         .clone()
 }
@@ -111,8 +118,14 @@ pub fn get_std_fs_interface() -> Result<ModuleInterface, String> {
             let mut env = Environment::new();
             check_program_with_env(&prog, &mut env)
                 .map_err(|e| format!("Failed to typecheck std:fs: {e:?}"))?;
-            ModuleInterface::extract(ModuleId::new(PathBuf::from("std:fs")), &prog, &env, None)
-                .map_err(|e| format!("Failed to extract std:fs interface: {e:?}"))
+            ModuleInterface::extract(
+                ModuleId::new(PathBuf::from("std:fs")),
+                &prog,
+                &env,
+                None,
+                &HashMap::new(),
+            )
+            .map_err(|e| format!("Failed to extract std:fs interface: {e:?}"))
         })
         .clone()
 }
@@ -126,10 +139,51 @@ pub fn get_std_env_interface() -> Result<ModuleInterface, String> {
             let mut env = Environment::new();
             check_program_with_env(&prog, &mut env)
                 .map_err(|e| format!("Failed to typecheck std:env: {e:?}"))?;
-            ModuleInterface::extract(ModuleId::new(PathBuf::from("std:env")), &prog, &env, None)
-                .map_err(|e| format!("Failed to extract std:env interface: {e:?}"))
+            ModuleInterface::extract(
+                ModuleId::new(PathBuf::from("std:env")),
+                &prog,
+                &env,
+                None,
+                &HashMap::new(),
+            )
+            .map_err(|e| format!("Failed to extract std:env interface: {e:?}"))
         })
         .clone()
+}
+
+/// Computes or retrieves the static ModuleInterface for `std:prelude`.
+/// Its exported trait impls (`Eq`/`Add` for `String`) are registered into
+/// every diagnostic environment so operator strictness checking matches the
+/// compiler.
+pub fn get_std_prelude_interface() -> Result<ModuleInterface, String> {
+    STD_PRELUDE_INTERFACE
+        .get_or_init(|| {
+            let graph = crate::modules::ModuleGraph::build_from_source(
+                std::path::Path::new(crate::modules::stdlib::STD_PRELUDE),
+                crate::modules::stdlib::STD_PRELUDE_SOURCE,
+            )
+            .map_err(|e| format!("Failed to build std:prelude graph: {e}"))?;
+            let (interfaces, _) = crate::modules::check_module_graph_with_envs(&graph)
+                .map_err(|e| format!("Failed to typecheck std:prelude: {e:?}"))?;
+            interfaces
+                .get(&ModuleId::new(PathBuf::from(
+                    crate::modules::stdlib::STD_PRELUDE,
+                )))
+                .cloned()
+                .ok_or_else(|| "Missing std:prelude interface".to_string())
+        })
+        .clone()
+}
+
+/// Registers the prelude's operator trait impls into an environment.
+/// Best-effort: if the prelude fails to load, strictness checking falls back
+/// to rejecting non-primitive operators (same as having no impls).
+fn register_prelude_impls(env: &mut Environment) {
+    if let Ok(iface) = get_std_prelude_interface() {
+        for impl_def in &iface.exported_impls {
+            env.register_impl(impl_def.clone());
+        }
+    }
 }
 
 /// Computes or retrieves the static ModuleInterface for `std:process`.
@@ -146,6 +200,7 @@ pub fn get_std_process_interface() -> Result<ModuleInterface, String> {
                 &prog,
                 &env,
                 None,
+                &HashMap::new(),
             )
             .map_err(|e| format!("Failed to extract std:process interface: {e:?}"))
         })
@@ -206,6 +261,8 @@ pub fn load_module_interface(
             visiting.insert(path.clone());
 
             let mut dep_env = Environment::new();
+            register_prelude_impls(&mut dep_env);
+            let mut dep_interfaces = HashMap::new();
             for sub_import in &program.imports {
                 if let Ok(sub_resolved) = resolve_import(&sub_import.node.source, Some(path), store)
                     && let Ok(sub_iface) = load_module_interface(&sub_resolved, store, visiting)
@@ -215,6 +272,7 @@ pub fn load_module_interface(
                         &sub_import.node.clause,
                         sub_import.span,
                     );
+                    dep_interfaces.insert(sub_iface.module_id.clone(), sub_iface);
                 }
             }
 
@@ -227,6 +285,7 @@ pub fn load_module_interface(
                 &program,
                 &dep_env,
                 program.library.as_ref().map(|l| PathBuf::from(&l.node)),
+                &dep_interfaces,
             )
             .map_err(|e| e.kind.to_string())?;
 
@@ -279,6 +338,8 @@ pub fn compute_diagnostics_with_imports(
             }
 
             // 2. Resolve and ingest imported dependencies
+            let mut dep_interfaces = HashMap::new();
+            register_prelude_impls(&mut env);
             for import_decl in &program.imports {
                 match resolve_import(
                     &import_decl.node.source,
@@ -305,6 +366,7 @@ pub fn compute_diagnostics_with_imports(
                                     data: None,
                                 });
                             }
+                            dep_interfaces.insert(dep_interface.module_id.clone(), dep_interface);
                         }
                         Err(err_msg) => {
                             let range = line_index.span_to_range(import_decl.span);
@@ -370,6 +432,7 @@ pub fn compute_diagnostics_with_imports(
                 &program,
                 &env,
                 program.library.as_ref().map(|l| PathBuf::from(&l.node)),
+                &dep_interfaces,
             )
             .ok();
 

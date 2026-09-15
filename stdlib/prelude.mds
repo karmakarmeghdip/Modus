@@ -1,0 +1,10 @@
+// Modus standard library prelude (std:prelude)
+//
+// Implicitly loaded into every build (like a compiler prelude). This file is
+// a single barrel: it re-exports its home modules' public surface — including
+// the operator trait impls (`Eq`/`Add` for `String`) that `==`/`!=`/`+` lower
+// to — so every program sees them without an explicit import. Keep the
+// re-export list minimal: every module pulled in here is compiled into every
+// program.
+
+export * from "std:string";

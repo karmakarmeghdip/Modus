@@ -23,53 +23,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let mut l_val = self.eval_atom(lhs)?;
                 let mut r_val = self.eval_atom(rhs)?;
 
-                let l_is_str = self
-                    .get_atom_type(lhs)
-                    .as_ref()
-                    .map(|t| t.is_string())
-                    .unwrap_or(false);
-                let r_is_str = self
-                    .get_atom_type(rhs)
-                    .as_ref()
-                    .map(|t| t.is_string())
-                    .unwrap_or(false);
-                if (l_is_str || r_is_str) && (*op == BinaryOp::Eq || *op == BinaryOp::NotEq) {
-                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
-                    let l_ptr = if l_val.is_pointer_value() {
-                        l_val.into_pointer_value()
-                    } else {
-                        self.builder
-                            .build_int_to_ptr(l_val.into_int_value(), ptr_ty, "l_ptr")
-                            .unwrap()
-                    };
-                    let r_ptr = if r_val.is_pointer_value() {
-                        r_val.into_pointer_value()
-                    } else {
-                        self.builder
-                            .build_int_to_ptr(r_val.into_int_value(), ptr_ty, "r_ptr")
-                            .unwrap()
-                    };
-                    let cmp_call = self
-                        .builder
-                        .build_call(
-                            self.runtime.str_eq_fn,
-                            &[l_ptr.into(), r_ptr.into()],
-                            "str_eq_res",
-                        )
-                        .map_err(|e| e.to_string())?;
-                    let cmp_val = cmp_call
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_int_value();
-                    let res = if *op == BinaryOp::Eq {
-                        cmp_val
-                    } else {
-                        self.builder.build_not(cmp_val, "str_neq").unwrap()
-                    };
-                    return Ok(res.into());
-                }
-
                 let is_cmp = matches!(
                     op,
                     BinaryOp::Eq
@@ -95,6 +48,12 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             AnfExpr::Call { callee, args } => {
+                // `std:string.concat` is a codegen-owned intrinsic: emit the
+                // concatenation inline (see `try_build_string_concat_call`)
+                // instead of a call.
+                if let Some(res) = self.try_build_string_concat_call(callee, args) {
+                    return res;
+                }
                 if let Atom::Var(name) = callee {
                     if let Some(&tag) = self.union_variants.get(name) {
                         return self.build_variant_constructor(tag, args);

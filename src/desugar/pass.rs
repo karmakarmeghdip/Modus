@@ -61,6 +61,45 @@ pub fn desugar_program(program: &Program, env: &Environment) -> DesugaredProgram
         }
     }
 
+    // Trait impl methods with cross-module symbols (e.g. `Eq` for `String`
+    // from std:prelude) are externs for modules that call them without
+    // defining them. Impl methods defined locally in this module are
+    // compiled here, so they are skipped.
+    let local_impl_keys: std::collections::HashSet<String> = program
+        .declarations
+        .iter()
+        .filter_map(|d| match &d.node {
+            ast::Declaration::Impl(im) => env
+                .resolve_ast_type(&im.target_type.node, &[], Some(im.target_type.span))
+                .ok()
+                .map(|t| format!("{}|{}", im.trait_name, t)),
+            _ => None,
+        })
+        .collect();
+    for impls in env.impls.values() {
+        for im in impls {
+            let key = format!("{}|{}", im.trait_name, im.target_type);
+            if local_impl_keys.contains(&key) {
+                continue;
+            }
+            for sig in im.methods.values() {
+                let Some(sym) = &sig.symbol_name else {
+                    continue;
+                };
+                if seen_symbols.insert(sym.clone()) {
+                    extern_functions.push(DesugaredExternFunction {
+                        name: sig.name.clone(),
+                        symbol_name: sym.clone(),
+                        param_types: sig.params.iter().map(|(_, ty)| ty.clone()).collect(),
+                        return_type: sig.return_type.clone(),
+                        is_effectful: sig.is_effectful,
+                        is_c_abi: false,
+                    });
+                }
+            }
+        }
+    }
+
     DesugaredProgram {
         declarations,
         extern_functions,
@@ -89,7 +128,37 @@ impl<'a> DesugarContext<'a> {
         name
     }
 
+    /// Returns the `method` signature of the `trait_name` impl for `ty`, if
+    /// the environment has one (e.g. `Eq`/`Add` for `String` via the
+    /// prelude). Type aliases are expanded before matching.
+    fn trait_method_sig(&self, trait_name: &str, method: &str, ty: &Type) -> Option<&FunctionSig> {
+        let resolved = match ty {
+            Type::Named { name, args } => self
+                .inferrer
+                .env
+                .expand_type_alias(name, args)
+                .unwrap_or_else(|| ty.clone()),
+            other => other.clone(),
+        };
+        self.inferrer
+            .env
+            .lookup_impls(trait_name)?
+            .iter()
+            .find(|im| im.target_type == resolved)?
+            .methods
+            .get(method)
+    }
+
     fn desugar_function(&mut self, func: &FunctionDecl, span: ast::Span) -> DesugaredFunction {
+        self.desugar_function_with_symbol(func, span, None)
+    }
+
+    fn desugar_function_with_symbol(
+        &mut self,
+        func: &FunctionDecl,
+        span: ast::Span,
+        symbol_override: Option<&str>,
+    ) -> DesugaredFunction {
         let generic_names: Vec<String> = func.type_params.iter().map(|p| p.name.clone()).collect();
         let old_generics = std::mem::replace(&mut self.inferrer.generics_in_scope, generic_names);
 
@@ -170,7 +239,9 @@ impl<'a> DesugarContext<'a> {
         self.inferrer.generics_in_scope = old_generics;
 
         DesugaredFunction {
-            name: sig.symbol_name().to_string(),
+            name: symbol_override
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| sig.symbol_name().to_string()),
             type_params: func.type_params.clone(),
             params: sig.params,
             return_type: sig.return_type,
@@ -187,10 +258,29 @@ impl<'a> DesugarContext<'a> {
             .resolve_ast_type(&im.target_type.node, &[], Some(im.target_type.span))
             .unwrap_or(Type::void());
 
+        // The registered impl may carry mangled cross-module symbol names for
+        // its methods (assigned during interface extraction in graph mode).
+        // Collected up front so the loop below can borrow `self` mutably.
+        let method_syms: Vec<Option<String>> = {
+            let env_impl = self
+                .inferrer
+                .env
+                .lookup_impls(&im.trait_name)
+                .and_then(|impls| impls.iter().find(|d| d.target_type == target_type));
+            im.methods
+                .iter()
+                .map(|m| {
+                    env_impl
+                        .and_then(|d| d.methods.get(&m.node.name))
+                        .and_then(|s| s.symbol_name.clone())
+                })
+                .collect()
+        };
+
         let mut methods = Vec::new();
-        for m in &im.methods {
+        for (m, sym) in im.methods.iter().zip(method_syms) {
             let m_span = m.span;
-            methods.push(self.desugar_function(&m.node, m_span));
+            methods.push(self.desugar_function_with_symbol(&m.node, m_span, sym.as_deref()));
         }
 
         DesugaredImpl {
@@ -316,6 +406,65 @@ impl<'a> DesugarContext<'a> {
             },
 
             ast::Expr::Binary { lhs, op, rhs } => {
+                // `==`/`!=` on a type with an `Eq` impl lowers to that
+                // impl's `eq` function (e.g. `String` via the prelude).
+                if matches!(op, ast::BinaryOp::Eq | ast::BinaryOp::NotEq)
+                    && let Some(lhs_raw) = self.inferrer.synth_expr(lhs).ok()
+                    && let Some(eq_sig) =
+                        self.trait_method_sig("Eq", "eq", &self.inferrer.subst.apply(&lhs_raw))
+                {
+                    let callee = eq_sig.symbol_name().to_string();
+                    let desugared_lhs = self.desugar_expr(lhs);
+                    let desugared_rhs = self.desugar_expr(rhs);
+                    let call = DesugaredExpr::new(
+                        DesugaredExprKind::Call {
+                            callee: Box::new(DesugaredExpr::new(
+                                DesugaredExprKind::Ident(callee),
+                                Type::bool(),
+                                expr.span,
+                            )),
+                            args: vec![desugared_lhs, desugared_rhs],
+                        },
+                        Type::bool(),
+                        expr.span,
+                    );
+                    if *op == ast::BinaryOp::NotEq {
+                        return DesugaredExpr::new(
+                            DesugaredExprKind::Unary {
+                                op: DesugaredUnaryOp::Not,
+                                expr: Box::new(call),
+                            },
+                            expr_ty,
+                            expr.span,
+                        );
+                    }
+                    return call;
+                }
+                // `+` on a type with an `Add` impl lowers to that impl's
+                // `add` function (e.g. `String` via the prelude). Numerics
+                // keep the builtin arithmetic lowering below.
+                if *op == ast::BinaryOp::Add
+                    && let Some(lhs_raw) = self.inferrer.synth_expr(lhs).ok()
+                    && let Some(add_sig) =
+                        self.trait_method_sig("Add", "add", &self.inferrer.subst.apply(&lhs_raw))
+                {
+                    let callee = add_sig.symbol_name().to_string();
+                    let ret_ty = add_sig.return_type.clone();
+                    let desugared_lhs = self.desugar_expr(lhs);
+                    let desugared_rhs = self.desugar_expr(rhs);
+                    return DesugaredExpr::new(
+                        DesugaredExprKind::Call {
+                            callee: Box::new(DesugaredExpr::new(
+                                DesugaredExprKind::Ident(callee),
+                                ret_ty.clone(),
+                                expr.span,
+                            )),
+                            args: vec![desugared_lhs, desugared_rhs],
+                        },
+                        ret_ty,
+                        expr.span,
+                    );
+                }
                 let desugared_lhs = self.desugar_expr(lhs);
                 let desugared_rhs = self.desugar_expr(rhs);
                 DesugaredExpr::new(

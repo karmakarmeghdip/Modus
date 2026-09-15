@@ -54,7 +54,8 @@ fn test_stdlib_env_graph_construction() {
     let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
         .expect("Failed to build graph with std:env");
 
-    assert_eq!(graph.modules.len(), 2);
+    // main + std:env + implicit std:prelude + std:string
+    assert_eq!(graph.modules.len(), 4);
     assert!(
         graph
             .modules

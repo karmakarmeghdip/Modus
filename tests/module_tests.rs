@@ -4,6 +4,16 @@ use modus::ast::*;
 use modus::parser::parse_program;
 use modus::typechecker::{TypeErrorKind, check_program};
 
+/// `std:prelude` (+ its `std:string` dependency) is implicitly part of every
+/// module graph, so graph-size assertions must account for these 2 modules.
+fn prelude_id() -> modus::modules::ModuleId {
+    modus::modules::ModuleId::new(std::path::PathBuf::from("std:prelude"))
+}
+
+fn std_string_id() -> modus::modules::ModuleId {
+    modus::modules::ModuleId::new(std::path::PathBuf::from("std:string"))
+}
+
 #[test]
 fn test_parse_library_directive() {
     let src = r#"
@@ -240,22 +250,36 @@ fn test_module_graph_linear_dependencies() {
     .unwrap();
 
     let graph = modus::modules::ModuleGraph::build(&main_path).expect("Graph build should succeed");
-    assert_eq!(graph.modules.len(), 3);
+    // a, b, main + implicit std:prelude + std:string
+    assert_eq!(graph.modules.len(), 5);
+    assert!(graph.modules.contains_key(&prelude_id()));
+    assert!(graph.modules.contains_key(&std_string_id()));
 
-    // Dependencies must precede dependents in topo_order: a -> b -> main
+    // Dependencies must precede dependents in topo_order: a -> b -> main,
+    // with the prelude subtree (std:string -> std:prelude) before main.
     let a_id = modus::modules::ModuleId::new(a_path.canonicalize().unwrap());
     let b_id = modus::modules::ModuleId::new(b_path.canonicalize().unwrap());
     let main_id = modus::modules::ModuleId::new(main_path.canonicalize().unwrap());
 
     assert_eq!(
         graph.topo_order,
-        vec![a_id.clone(), b_id.clone(), main_id.clone()]
+        vec![
+            a_id.clone(),
+            b_id.clone(),
+            std_string_id(),
+            prelude_id(),
+            main_id.clone()
+        ]
     );
 
-    // Topo waves: Wave 0: [a], Wave 1: [b], Wave 2: [main]
+    // Topo waves: Wave 0: [a, std:string], Wave 1: [b, std:prelude], Wave 2: [main]
     assert_eq!(graph.topo_waves.len(), 3);
-    assert_eq!(graph.topo_waves[0], vec![a_id]);
-    assert_eq!(graph.topo_waves[1], vec![b_id]);
+    assert_eq!(graph.topo_waves[0].len(), 2);
+    assert!(graph.topo_waves[0].contains(&a_id));
+    assert!(graph.topo_waves[0].contains(&std_string_id()));
+    assert_eq!(graph.topo_waves[1].len(), 2);
+    assert!(graph.topo_waves[1].contains(&b_id));
+    assert!(graph.topo_waves[1].contains(&prelude_id()));
     assert_eq!(graph.topo_waves[2], vec![main_id]);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -290,20 +314,24 @@ fn test_module_graph_diamond_dependencies() {
     .unwrap();
 
     let graph = modus::modules::ModuleGraph::build(&root_path).expect("Graph build should succeed");
-    assert_eq!(graph.modules.len(), 4);
+    // leaf, b1, b2, root + implicit std:prelude + std:string
+    assert_eq!(graph.modules.len(), 6);
 
     let leaf_id = modus::modules::ModuleId::new(leaf_path.canonicalize().unwrap());
     let b1_id = modus::modules::ModuleId::new(b1_path.canonicalize().unwrap());
     let b2_id = modus::modules::ModuleId::new(b2_path.canonicalize().unwrap());
     let root_id = modus::modules::ModuleId::new(root_path.canonicalize().unwrap());
 
-    // Wave 0: [leaf]
-    assert_eq!(graph.topo_waves[0], vec![leaf_id]);
+    // Wave 0: [leaf, std:string]
+    assert_eq!(graph.topo_waves[0].len(), 2);
+    assert!(graph.topo_waves[0].contains(&leaf_id));
+    assert!(graph.topo_waves[0].contains(&std_string_id()));
 
-    // Wave 1: [b1, b2] in parallel
-    assert_eq!(graph.topo_waves[1].len(), 2);
+    // Wave 1: [b1, b2, std:prelude] in parallel
+    assert_eq!(graph.topo_waves[1].len(), 3);
     assert!(graph.topo_waves[1].contains(&b1_id));
     assert!(graph.topo_waves[1].contains(&b2_id));
+    assert!(graph.topo_waves[1].contains(&prelude_id()));
 
     // Wave 2: [root]
     assert_eq!(graph.topo_waves[2], vec![root_id]);
@@ -364,7 +392,8 @@ fn test_module_graph_with_library_header() {
     .unwrap();
 
     let graph = modus::modules::ModuleGraph::build(&app_path).expect("Graph should build");
-    assert_eq!(graph.modules.len(), 2);
+    // header, app + implicit std:prelude + std:string
+    assert_eq!(graph.modules.len(), 4);
 
     let header_id = modus::modules::ModuleId::new(lib_header_path.canonicalize().unwrap());
     let header_node = graph.modules.get(&header_id).unwrap();
@@ -415,7 +444,7 @@ function main(): i32 {
     let interfaces =
         modus::modules::check_module_graph(&graph).expect("Typechecking should succeed");
 
-    assert_eq!(interfaces.len(), 2);
+    assert_eq!(interfaces.len(), 4);
     let math_id = modus::modules::ModuleId::new(math_path.canonicalize().unwrap());
     let math_intf = interfaces.get(&math_id).unwrap();
     assert!(math_intf.exported_functions.contains_key("add"));
@@ -462,7 +491,7 @@ function main(): i32 {
     let graph = modus::modules::ModuleGraph::build(&app_path).expect("Graph should build");
     let interfaces =
         modus::modules::check_module_graph(&graph).expect("Namespace typechecking should succeed");
-    assert_eq!(interfaces.len(), 2);
+    assert_eq!(interfaces.len(), 4);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -548,7 +577,7 @@ function main(): i32 {
     let interfaces = modus::modules::check_module_graph(&graph)
         .expect("Library header typechecking should succeed");
 
-    assert_eq!(interfaces.len(), 2);
+    assert_eq!(interfaces.len(), 4);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -790,7 +819,8 @@ function main(): i32 {
     assert_eq!(out1.status.code(), Some(10));
 
     let cache_store = modus::modules::CacheStore::new(&cache_dir);
-    assert_eq!(cache_store.manifest.entries.len(), 2);
+    // dep, app + implicit std:prelude + std:string
+    assert_eq!(cache_store.manifest.entries.len(), 4);
     let app_entry_v1 = cache_store
         .manifest
         .entries

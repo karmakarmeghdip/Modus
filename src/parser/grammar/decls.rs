@@ -216,27 +216,34 @@ where
             )
         });
 
-    // 4. Impl declaration: impl Drawable for Circle { ... }
-    let impl_decl = just(Token::Impl)
-        .ignore_then(ident_parser())
-        .then_ignore(just(Token::For))
-        .then(type_parser())
+    // 4. Impl declaration: impl Drawable for Circle { ... } (optionally exported)
+    let impl_decl = just(Token::Export)
+        .or_not()
         .then(
-            function_decl_internal()
-                .repeated()
-                .collect::<Vec<_>>()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+            just(Token::Impl)
+                .ignore_then(ident_parser())
+                .then_ignore(just(Token::For))
+                .then(type_parser())
+                .then(
+                    function_decl_internal()
+                        .repeated()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+                ),
         )
-        .map_with(|(((trait_name, _), target_type), methods), extra| {
-            Spanned::new(
-                Declaration::Impl(ImplDecl {
-                    trait_name,
-                    target_type,
-                    methods,
-                }),
-                to_ast_span(extra.span()),
-            )
-        });
+        .map_with(
+            |(export_tok, (((trait_name, _), target_type), methods)), extra| {
+                Spanned::new(
+                    Declaration::Impl(ImplDecl {
+                        trait_name,
+                        target_type,
+                        methods,
+                        is_exported: export_tok.is_some(),
+                    }),
+                    to_ast_span(extra.span()),
+                )
+            },
+        );
 
     // 5. Extern declaration
     let str_val = select! { Token::Str(s) => s };

@@ -52,7 +52,8 @@ fn test_stdlib_time_graph_construction() {
 
     let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
         .expect("Failed to build module graph");
-    assert_eq!(graph.modules.len(), 2);
+    // main + std:time + implicit std:prelude + std:string
+    assert_eq!(graph.modules.len(), 4);
     assert!(
         graph
             .modules

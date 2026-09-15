@@ -5,17 +5,17 @@
   # env.GREET = "devenv";
 
   packages = [
-    pkgs.llvmPackages_23.llvm.dev
-    pkgs.llvmPackages_23.libllvm
+    pkgs.llvmPackages_22.llvm.dev
+    pkgs.llvmPackages_22.libllvm
     pkgs.libffi
     pkgs.libxml2
     pkgs.zlib
     pkgs.ncurses
   ];
 
-  env.LLVM_SYS_231_PREFIX = "${pkgs.llvmPackages_23.llvm.dev}";
+  env.LLVM_SYS_221_PREFIX = "${pkgs.llvmPackages_22.llvm.dev}";
   env.LIBRARY_PATH = lib.makeLibraryPath [
-    pkgs.llvmPackages_23.libllvm
+    pkgs.llvmPackages_22.libllvm
     pkgs.libffi
     pkgs.libxml2
     pkgs.zlib

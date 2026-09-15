@@ -127,6 +127,13 @@ impl ModuleGraph {
         queue.push_back(entry_id.clone());
         visited.insert(entry_id.clone());
 
+        // std:prelude is implicitly part of every build: it carries the trait
+        // impls that operators like `==` lower to (e.g. `Eq` for `String`).
+        let prelude_id = ModuleId::new(PathBuf::from(super::stdlib::STD_PRELUDE));
+        if prelude_id != entry_id && visited.insert(prelude_id.clone()) {
+            queue.push_back(prelude_id.clone());
+        }
+
         while let Some(current_id) = queue.pop_front() {
             let file_path = current_id.path();
             let source = if current_id == entry_id
@@ -209,7 +216,15 @@ impl ModuleGraph {
             );
         }
 
-        // Cycle detection and topological ordering
+        // Cycle detection and topological ordering. The prelude must be a
+        // dependency of the entry so DFS (and thus every compile/link step)
+        // reaches it even when no module imports it explicitly.
+        if let Some(entry_node) = modules.get_mut(&entry_id)
+            && !entry_node.dependencies.contains(&prelude_id)
+            && prelude_id != entry_id
+        {
+            entry_node.dependencies.push(prelude_id.clone());
+        }
         let (topo_order, topo_waves) = Self::compute_topological_sort(&entry_id, &modules)?;
 
         Ok(Self {

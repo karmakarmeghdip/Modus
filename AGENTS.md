@@ -23,6 +23,8 @@ Modus compiler (Rust). Greenfield: `src/main.rs` is hello-world, `Cargo.toml` ha
 
 `chumsky` parse → typed AST → inference + traits + purity → desugar → ANF + closures → liveness/borrow → Perceus + FBIP → `inkwell` LLVM `-O3`. Planned dirs: `src/ast/`, typechecker, ANF/IR, backend.
 
+- **Prelude**: `stdlib/prelude.mds` (single-file barrel, re-exports + operator trait impls) is implicitly part of every module graph; its exported impls are registered into every module's env. `==`/`!=` on a type with an `Eq` impl desugars to that impl's `eq` function, `+` on a type with an `Add` impl to its `add` function — no per-type compiler magic. `==`/`+` on any other non-primitive type is a type error (`TraitNotImplemented`). Guard: `tests/runtime_guard_tests.rs` pins the exact `runtime.rs` symbol set (`ALLOWED ∪ LEGACY`; shrink `LEGACY` with each migration step).
+
 ## Compiler Minimalism & Runtime Discipline
 
 - **Minimal Compiler**: The compiler should just compile and nothing else. Keep the compiler as lean and minimal as possible; implement as much functionality as possible in Modus itself.

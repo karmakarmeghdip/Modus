@@ -32,8 +32,12 @@ This document specifies the architecture, implemented components, and forward-lo
      - Memory allocation and deallocation (`modus_alloc`, `free`)
      - Perceus reference counting (`modus_inc_ref`, `modus_dec_ref`)
      - Primitive memory layouts and headers (refcount, length, capacity for strings and arrays)
-     - Core string concatenation (`modus_str_concat`) and string equality (`modus_str_eq`)
       - Fatal panic / abort / array bounds-check handlers
+
+   (String equality `modus_str_eq` was removed in P1.1 and string
+   concatenation `modus_str_concat` in P1.2: `==`/`!=` lower through the `Eq`
+   impl and `+` through the `Add` impl in `stdlib/string.mds`, with `concat`
+   emitted inline by codegen from `modus_alloc`/`memcpy`/`modus_dec_ref`.)
    - Domain-specific logic (filesystem operations, environment inspection, process lifecycle, networking) must **never** be hardcoded into the compiler runtime. Instead, the standard library is written in pure Modus code that interacts with the operating system via low-level `Pointer(T)` operations and thin libc `extern "C"` declarations.
    - **Zero Domain Shims in Compiler Runtime**: `runtime.rs` contains **zero** domain-specific or OS-specific shims. `modus_fs_read_dir` has been completely eliminated from the compiler runtime and rewritten in 100% pure Modus in `stdlib/fs.mds` using `Pointer(u8).offset(19)`, `[String]`, and native `opendir`/`readdir`/`closedir` bindings. All transitional helpers are removed, leaving `runtime.rs` as a strictly minimal, language-agnostic Perceus + FBIP kernel.
 
@@ -320,7 +324,9 @@ Modus follows this exact model. The compiler runtime (`src/backend/runtime.rs`) 
   - Memory allocation and deallocation (`modus_alloc`, `modus_free`).
   - Perceus reference counting (`modus_inc_ref`, `modus_dec_ref`).
   - Core header layouts (Perceus RC header `[rc: i64]`, string `[rc, len, cap, chars]`, array `[rc, len, cap, ptr, elements]`).
-  - Primitive string operations (`modus_str_concat`, `modus_str_eq`).
+  - Primitive string operations (none remain: `modus_str_eq` removed in P1.1,
+    `modus_str_concat` removed in P1.2 — `String ==/!=`/`+` go through the
+    `Eq`/`Add` impls in `stdlib/string.mds`).
   - Fatal panic / abort / array bounds-check handlers.
 - **What must be stripped out of the compiler**:
   - `modus_fs_read_dir` and any future domain helpers.

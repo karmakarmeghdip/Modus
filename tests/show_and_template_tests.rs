@@ -1,24 +1,50 @@
 use inkwell::context::Context;
 use modus::backend::CodeGen;
-use modus::desugar::desugar_program;
-use modus::ir::{apply_perceus_and_fbip, convert_closures, lower_program};
 use modus::parser::{parse_expr, parse_program};
-use modus::typechecker::{check_program, infer::TypeInferrer, scope::Environment};
+use modus::typechecker::{
+    Type, check_program,
+    infer::TypeInferrer,
+    scope::{Environment, FunctionSig, ImplDef},
+};
 
 fn compile_to_llvm<'ctx>(
     context: &'ctx Context,
     source: &str,
     module_name: &str,
 ) -> Result<CodeGen<'ctx>, String> {
-    let program = parse_program(source).map_err(|e| format!("{e:?}"))?;
-    let env = check_program(&program).map_err(|e| format!("{e:?}"))?;
-    let desugared = desugar_program(&program, &env);
-    let mut anf = lower_program(&desugared);
-    convert_closures(&mut anf);
-    apply_perceus_and_fbip(&mut anf);
-    let mut codegen = CodeGen::new(context, module_name);
-    codegen.compile_program(&anf)?;
-    Ok(codegen)
+    // Prelude-aware single-module pipeline: `==`/`+` on `String` lower
+    // through the `Eq`/`Add` impls, so the bare typecheck+desugar pipeline
+    // cannot be used for programs with string operators.
+    modus::compile_source(context, source, module_name)
+}
+
+/// Bare `Environment` plus the `Add` impl for `String` (what the prelude
+/// provides in real builds), for operator typechecking unit tests.
+fn env_with_string_add() -> Environment {
+    let mut env = Environment::new();
+    env.register_impl(ImplDef {
+        trait_name: "Add".to_string(),
+        target_type: Type::string(),
+        methods: [(
+            "add".to_string(),
+            FunctionSig {
+                name: "add".to_string(),
+                type_params: vec![],
+                params: vec![
+                    ("self".to_string(), Type::string()),
+                    ("other".to_string(), Type::string()),
+                ],
+                return_type: Type::string(),
+                is_effectful: false,
+                span: modus::ast::Span::default(),
+                symbol_name: None,
+                is_c_abi: false,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    });
+    env
 }
 
 fn jit_eval_string(source: &str, module_name: &str) -> String {
@@ -127,7 +153,9 @@ fn test_typecheck_primitive_show() {
 
 #[test]
 fn test_typecheck_string_concatenation() {
-    let mut env = Environment::new();
+    // Bare environments have no prelude impls; register the `Add` impl for
+    // `String` explicitly (graph/`compile_source` builds get it automatically).
+    let mut env = env_with_string_add();
     let mut inferrer = TypeInferrer::new(&mut env, None);
 
     let expr = parse_expr(r#""hello " + "world""#).unwrap();
@@ -147,7 +175,9 @@ fn test_typecheck_template_string() {
         }
     "#;
     let program = parse_program(source).unwrap();
-    assert!(check_program(&program).is_ok());
+    // Templates fold holes with `String +`, which needs the `Add` impl.
+    let mut env = env_with_string_add();
+    assert!(modus::typechecker::check_program_with_env(&program, &mut env).is_ok());
 }
 
 #[test]
@@ -169,7 +199,9 @@ fn test_typecheck_custom_type_show_implementation() {
         }
     "#;
     let program = parse_program(source).unwrap();
-    assert!(check_program(&program).is_ok());
+    // Templates fold holes with `String +`, which needs the `Add` impl.
+    let mut env = env_with_string_add();
+    assert!(modus::typechecker::check_program_with_env(&program, &mut env).is_ok());
 }
 
 #[test]

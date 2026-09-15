@@ -57,7 +57,7 @@ impl std::fmt::Display for ResolveError {
             Self::UnknownStdModule { module } => {
                 write!(
                     f,
-                    "Unknown standard library module '{module}'. Available modules: std:io, std:fs, std:env, std:process, std:string, std:math, std:time"
+                    "Unknown standard library module '{module}'. Available modules: std:prelude, std:io, std:fs, std:env, std:process, std:string, std:math, std:time, std:collections"
                 )
             }
         }

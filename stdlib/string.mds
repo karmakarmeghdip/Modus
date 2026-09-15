@@ -8,6 +8,42 @@ export function codePointAt(s: String, index: i64): i32 => s.charCodeAt(index);
 export function isEmpty(s: String): bool => s.length() == 0;
 export function charAt(s: String, index: i64): String => s.substring(index, index + 1);
 
+// 0. Comparison (backs the `Eq` impl below; `==`/`!=` lower to it)
+function string_eq_loop(a: String, b: String, len: i64, idx: i64): bool {
+    if (idx >= len) {
+        return true;
+    } else if (a.charCodeAt(idx) != b.charCodeAt(idx)) {
+        return false;
+    } else {
+        return string_eq_loop(a, b, len, idx + 1);
+    }
+}
+
+export function stringEq(a: String, b: String): bool {
+    let len_a: i64 = a.length();
+    let len_b: i64 = b.length();
+    if (len_a != len_b) {
+        return false;
+    } else {
+        return string_eq_loop(a, b, len_a, 0);
+    }
+}
+
+// Operator trait impls. These live in the impl's home module (not the
+// prelude) so this module's own `==`/`+` resolve while it is checked;
+// `std:prelude` re-exports them (`export *`) into every build.
+export impl Eq for String {
+    function eq(self: String, other: String): bool {
+        return stringEq(self, other);
+    }
+}
+
+export impl Add for String {
+    function add(self: String, other: String): String {
+        return concat(self, other);
+    }
+}
+
 // 2. Substrings & Slices
 export function substring(s: String, start: i64, end: i64): String => s.substring(start, end);
 

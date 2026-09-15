@@ -65,16 +65,23 @@ fn test_stdlib_io_graph_construction() {
     let graph = ModuleGraph::build_from_source(Path::new("main.mds"), user_src)
         .expect("Failed to build graph with std:io");
 
-    assert_eq!(graph.modules.len(), 2);
+    // main + std:io + implicit std:prelude + std:string
+    assert_eq!(graph.modules.len(), 4);
     let std_id = ModuleId::new(PathBuf::from("std:io"));
     let main_id = ModuleId::new(PathBuf::from("main.mds"));
+    let prelude_id = ModuleId::new(PathBuf::from("std:prelude"));
+    let string_id = ModuleId::new(PathBuf::from("std:string"));
 
     assert!(graph.modules.contains_key(&std_id));
     assert!(graph.modules.contains_key(&main_id));
+    assert!(graph.modules.contains_key(&prelude_id));
+    assert!(graph.modules.contains_key(&string_id));
 
-    // In topological order, std:io must come first
-    assert_eq!(graph.topo_order[0], std_id);
-    assert_eq!(graph.topo_order[1], main_id);
+    // In topological order, dependencies must precede main
+    let pos = |id: &ModuleId| graph.topo_order.iter().position(|m| m == id).unwrap();
+    assert!(pos(&std_id) < pos(&main_id));
+    assert!(pos(&string_id) < pos(&prelude_id));
+    assert!(pos(&prelude_id) < pos(&main_id));
 
     // Verify JIT execution
     let res = jit_run_graph(&graph).expect("JIT execution failed");
